@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs and Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Axolotl / Deep Learning specific
+outputs/
+checkpoints/
+models/
+data/
+datasets/
+wandb/
+runs/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Data formats used in training
+*.jsonl
+*.csv
+*.tsv
+*.parquet
+
+# HuggingFace & Cache
+.cache/
+huggingface/
