@@ -1,5 +1,5 @@
 # Use an Unsloth compatible base image
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,7 +26,7 @@ COPY pyproject.toml /workspace/
 
 # Install dependencies using uv
 RUN uv pip install --system \
-    "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git" \
+    "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git" \
     transformers \
     trl \
     peft \
