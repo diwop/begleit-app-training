@@ -1,0 +1,5 @@
+{"system": "You are a helpful assistant.", "user": "Hello!", "assistant": "Hi there! How can I help you?"}
+{"system": "You are a helpful assistant.", "user": "What is the capital of France?", "assistant": "The capital of France is Paris."}
+{"system": "You are a coding assistant.", "user": "Write a python loop.", "assistant": "for i in range(10):\n    print(i)"}
+{"system": "You are a coding assistant.", "user": "What is 2+2?", "assistant": "2+2 is 4."}
+{"system": "You are an AI.", "user": "Who are you?", "assistant": "I am an AI assistant."}
