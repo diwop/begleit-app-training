@@ -6,4 +6,6 @@ See [docs/implementation-details.md](docs/implementation-details.md) for technic
 
 ## Getting Started
 
-Use the agentic workflows in [`/onboarding`](.agent/workflows/onboarding.md) to get started.
+Use the agentic workflow [`/onboarding`](.agent/workflows/onboarding.md) to get started.
+
+Create the docker image using `./docker-build.sh`.

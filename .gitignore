@@ -24,21 +24,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# Axolotl / Deep Learning specific
-outputs/
-checkpoints/
-models/
-data/
-datasets/
-wandb/
-runs/
-*.safetensors
-*.bin
-*.pt
-*.pth
-*.ckpt
-*.onnx
-
 # Data formats used in training
 *.jsonl
 *.csv

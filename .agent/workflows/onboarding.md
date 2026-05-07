@@ -14,8 +14,11 @@ Run command exactly to check for missing requirements:
 // turbo-all
 
 ```bash
-echo "git" && \ # mac: brew install git; linux: sudo apt install git; win: winget install Git.Git
+echo "git" && \
 git --version && \
+echo "docker" && \
+echo "python3" && python3 --version && \
+echo "uv" && uv --version && \
 echo "done"
 ```
 
@@ -25,13 +28,19 @@ If you see few or no dependencies or if you have installed a tool (especially pr
 Check the path and ask the developer wether `$PATH` is defined in the wrong file or what is missing (e.g. `export PATH="$PATH:$(go env GOPATH)/bin`).
 If the developer fixed path issues, run `source ~/.zshenv` (or your respective file) and run the requirements check again.
 
-
 If there are missing dependencies:
 
 - Turn artifact into implementation plan
 - Add tasks to install missing dependencies to the plan
 - State which you can and will install
 - State in detail which need to be installed manually and how
+
+| Tool    | mac                        | linux                                      | win                                                         |
+| ------- | -------------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| git     | brew install git           | sudo apt install git                       | winget install Git.Git                                      |
+| docker  | brew install --cask docker | sudo apt install docker.io                 | winget install Docker.DockerDesktop                         |
+| python3 | brew install python@3.12   | sudo apt install python3 python3-pip       | winget install Python.Python.3.12                           |
+| uv      | brew install uv            | curl -LsSf https://astral.sh/uv/install.sh | powershell -c "irm https://astral.sh/uv/install.ps1 \| iex" |
 
 # Git Repo
 
