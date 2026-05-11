@@ -7,7 +7,7 @@ from src.prepare_data import load_and_format_data
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_id", type=str, default="mistralai/Mixtral-8x7B-v0.1")
+    parser.add_argument("--model_id", type=str, default="unsloth/Mixtral-8x7B-v0.1-bnb-4bit")
     parser.add_argument("--dataset_path", type=str, default="data/sample_dataset.jsonl")
     parser.add_argument("--output_dir", type=str, default="/workspace/output")
     args = parser.parse_args()

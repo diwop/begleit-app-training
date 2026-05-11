@@ -1,5 +1,5 @@
 # Use an Unsloth compatible base image
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,7 +26,7 @@ COPY pyproject.toml /workspace/
 
 # Install dependencies using uv
 RUN uv pip install --system \
-    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git" \
+    "unsloth[cu128-torch280] @ git+https://github.com/unslothai/unsloth.git" \
     transformers \
     trl \
     peft \
@@ -37,5 +37,9 @@ RUN uv pip install --system \
 # Create output directory
 RUN mkdir -p /workspace/output
 
+# Run unit tests to validate the environment and imports during build
+ENV IN_DOCKER=true
+RUN python -m pytest tests/
+
 # Set entrypoint
-ENTRYPOINT ["python", "src/train.py"]
+ENTRYPOINT ["python", "-m", "src.train"]
