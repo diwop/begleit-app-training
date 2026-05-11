@@ -1,4 +1,5 @@
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import argparse
 from unsloth import FastLanguageModel
 from trl import SFTTrainer
@@ -15,7 +16,7 @@ def main():
     print(f"Initializing model: {args.model_id}")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_id,
-        max_seq_length=2048,
+        max_seq_length=1024,
         dtype=None,
         load_in_4bit=True,
         device_map={"": 0},
@@ -46,7 +47,7 @@ def main():
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
-        max_seq_length=2048,
+        max_seq_length=1024,
         dataset_num_proc=2,
         args=TrainingArguments(
             per_device_train_batch_size=1,
