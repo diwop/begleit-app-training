@@ -18,6 +18,7 @@ def main():
         max_seq_length=2048,
         dtype=None,
         load_in_4bit=True,
+        device_map={"": 0},
     )
 
     print("Applying QLoRA/QDoRA adapters...")
@@ -48,8 +49,8 @@ def main():
         max_seq_length=2048,
         dataset_num_proc=2,
         args=TrainingArguments(
-            per_device_train_batch_size=2,
-            gradient_accumulation_steps=4,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=8,
             warmup_steps=5,
             max_steps=10, # Brief fine-tuning job for testing
             learning_rate=2e-4,
