@@ -26,7 +26,7 @@ COPY pyproject.toml /workspace/
 
 # Install dependencies using uv
 RUN uv pip install --system \
-    "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git" \
+    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git" \
     transformers \
     trl \
     peft \
