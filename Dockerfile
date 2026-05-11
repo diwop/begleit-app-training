@@ -26,7 +26,7 @@ COPY pyproject.toml /workspace/
 
 # Install dependencies using uv
 RUN uv pip install --system \
-    "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git" \
+    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git" \
     transformers \
     trl \
     peft \
@@ -36,6 +36,10 @@ RUN uv pip install --system \
 
 # Create output directory
 RUN mkdir -p /workspace/output
+
+# Run unit tests to validate the environment and imports during build
+ENV IN_DOCKER=true
+RUN python -m pytest tests/
 
 # Set entrypoint
 ENTRYPOINT ["python", "src/train.py"]
