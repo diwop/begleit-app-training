@@ -34,7 +34,7 @@ def main():
         random_state=3407,
         use_rslora=False,
         loftq_config=None,
-        use_dora=True, # Requested by PRD
+        use_dora=False, # DoRA is mathematically unsupported on MoE expert layers (ParamWrapper)
     )
 
     print("Loading dataset...")
