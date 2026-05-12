@@ -2,7 +2,11 @@ base_model: google/gemma-4-26B-A4B-it
 load_in_4bit: true
 
 adapter: qlora
-peft_use_dora: false
+lora_r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+lora_target_modules:
+  - all-linear
 
 datasets:
   - path: data/axolotl_dataset.jsonl
