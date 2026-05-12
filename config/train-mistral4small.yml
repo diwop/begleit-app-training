@@ -5,8 +5,7 @@ adapter: qlora
 lora_r: 32
 lora_alpha: 64
 lora_dropout: 0.05
-lora_target_modules:
-  - all-linear
+lora_target_linear: true
 
 datasets:
   - path: data/axolotl_dataset.jsonl
