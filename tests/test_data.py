@@ -18,20 +18,36 @@ def sample_jsonl():
     yield path
     os.remove(path)
 
-def test_load_and_format_data(sample_jsonl):
-    dataset = load_and_format_data(sample_jsonl)
+@pytest.fixture
+def output_jsonl():
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".jsonl") as f:
+        path = f.name
+    yield path
+    os.remove(path)
+
+def test_load_and_format_data(sample_jsonl, output_jsonl):
+    dataset = load_and_format_data(sample_jsonl, output_jsonl)
     
     assert len(dataset) == 2
-    assert "text" in dataset.features
+    assert "conversations" in dataset[0]
     
     # Check formatting
-    text = dataset[0]["text"]
-    assert "<|im_start|>system\nSys1<|im_end|>" in text
-    assert "<|im_start|>user\nUser1<|im_end|>" in text
-    assert "<|im_start|>assistant\nAsst1<|im_end|>" in text
+    convs = dataset[0]["conversations"]
+    assert len(convs) == 3
+    assert convs[0] == {"from": "system", "value": "Sys1"}
+    assert convs[1] == {"from": "human", "value": "User1"}
+    assert convs[2] == {"from": "gpt", "value": "Asst1"}
+    
+    # Verify file was written
+    with open(output_jsonl, "r") as f:
+        lines = f.readlines()
+        assert len(lines) == 2
+        loaded = json.loads(lines[0])
+        assert "conversations" in loaded
 
-def test_no_empty_strings(sample_jsonl):
-    dataset = load_and_format_data(sample_jsonl)
+def test_no_empty_strings(sample_jsonl, output_jsonl):
+    dataset = load_and_format_data(sample_jsonl, output_jsonl)
     for row in dataset:
-        assert isinstance(row["text"], str)
-        assert len(row["text"].strip()) > 0
+        for msg in row["conversations"]:
+            assert isinstance(msg["value"], str)
+            assert len(msg["value"].strip()) > 0

@@ -1,7 +1,7 @@
 [project]
-name = "unsloth-moe-pipeline"
+name = "axolotl-moe-pipeline"
 version = "0.1.0"
-description = "Unsloth MoE fine-tuning pipeline"
+description = "Axolotl MoE fine-tuning pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
