@@ -1,13 +1,14 @@
 import json
-from datasets import Dataset
+import os
 
-def load_and_format_data(file_path: str) -> Dataset:
+def load_and_format_data(input_file: str, output_file: str) -> list:
     """
-    Loads a JSONL file and formats it using ChatML-like structure.
+    Loads a JSONL file and formats it into Axolotl's ShareGPT format, saving it to output_file.
+    Returns the loaded structured data.
     """
-    formatted_data = {"text": []}
+    formatted_data = []
     
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
@@ -16,15 +17,25 @@ def load_and_format_data(file_path: str) -> Dataset:
             user = entry.get("user", "")
             assistant = entry.get("assistant", "")
             
-            # Use ChatML formatting (approximate)
-            prompt = f"<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant}<|im_end|>"
-            
-            if prompt.strip():
-                formatted_data["text"].append(prompt)
+            conversations = []
+            if system:
+                conversations.append({"from": "system", "value": system})
+            if user:
+                conversations.append({"from": "human", "value": user})
+            if assistant:
+                conversations.append({"from": "gpt", "value": assistant})
                 
-    return Dataset.from_dict(formatted_data)
+            if conversations:
+                formatted_data.append({"conversations": conversations})
+                
+    with open(output_file, "w", encoding="utf-8") as out_f:
+        for item in formatted_data:
+            out_f.write(json.dumps(item) + "\n")
+            
+    return formatted_data
 
 if __name__ == "__main__":
-    ds = load_and_format_data("data/sample_dataset.jsonl")
-    print(f"Loaded {len(ds)} examples.")
+    output_path = "data/axolotl_dataset.jsonl"
+    ds = load_and_format_data("data/sample_dataset.jsonl", output_path)
+    print(f"Loaded {len(ds)} examples. Saved to {output_path}")
     print("Sample:", ds[0])

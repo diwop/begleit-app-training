@@ -8,4 +8,4 @@ See [docs/implementation-details.md](docs/implementation-details.md) for technic
 
 Use the agentic workflow [`/onboarding`](.agent/workflows/onboarding.md) to get started.
 
-Create the docker image using `./docker-build.sh`.
+See [docs/training.md](docs/training.md) how to fine-tune a model.

@@ -1,18 +1,11 @@
-# Use an Unsloth compatible base image
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel
+# Use an official Axolotl compatible base image
+FROM winglian/axolotl:main-py3.10-cu121-2.1.2
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install required system packages
-RUN apt-get update && apt-get install -y \
-    git \
-    wget \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv
+# Install uv for fast dependency management
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
 # Set working directory
@@ -22,24 +15,23 @@ WORKDIR /workspace
 COPY data/ /workspace/data/
 COPY src/ /workspace/src/
 COPY tests/ /workspace/tests/
+COPY config/ /workspace/config/
 COPY pyproject.toml /workspace/
 
-# Install dependencies using uv
+# Prepare data before training
+RUN python src/prepare_data.py
+
+# Install testing/data prep dependencies natively using uv
 RUN uv pip install --system \
-    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git" \
-    transformers \
-    trl \
-    peft \
     datasets \
-    pytest \
-    bitsandbytes
+    pytest
 
 # Create output directory
 RUN mkdir -p /workspace/output
 
-# Run unit tests to validate the environment and imports during build
+# Run unit tests to validate the environment during build
 ENV IN_DOCKER=true
 RUN python -m pytest tests/
 
-# Set entrypoint
-ENTRYPOINT ["python", "src/train.py"]
+# Set entrypoint to run axolotl
+ENTRYPOINT ["accelerate", "launch", "-m", "axolotl.cli.train", "config/train.yml"]
