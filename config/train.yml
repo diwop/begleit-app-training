@@ -1,4 +1,4 @@
-base_model: unsloth/mixtral-8x7b-v0.1-bnb-4bit
+base_model: unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit
 load_in_4bit: true
 
 adapter: qlora
@@ -7,11 +7,11 @@ peft_use_dora: true
 datasets:
   - path: data/axolotl_dataset.jsonl
     type: chat_template
-    field_messages: conversations
+    chat_template: tokenizer_default
+    field_messages: messages
     message_property_mappings:
-      role: from
-      content: value
-    chat_template: mistral
+      role: role
+      content: content
 
 dataset_prepared_path: last_run_prepared
 val_set_size: 0
@@ -21,8 +21,10 @@ sequence_len: 1024
 sample_packing: true
 pad_to_sequence_len: true
 
+# default: optimized for multiple 24GB VRAM cards
 micro_batch_size: 1
-gradient_accumulation_steps: 8 # optimized for multiple 24GB VRAM cards
+gradient_accumulation_steps: 8
+
 num_epochs: 1
 optimizer: adamw_bnb_8bit
 lr_scheduler: cosine
