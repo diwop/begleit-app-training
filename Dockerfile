@@ -1,5 +1,5 @@
 # Use an official Axolotl compatible base image
-FROM winglian/axolotl:main-py3.10-cu121-2.1.2
+FROM winglian/axolotl:main-py3.10-cu121-2.3.1
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
