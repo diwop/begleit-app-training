@@ -38,5 +38,3 @@ gradient_checkpointing_kwargs:
   use_reentrant: false
 
 flash_attention: true
-
-deepspeed: config/zero3.json

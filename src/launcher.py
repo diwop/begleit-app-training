@@ -1,4 +1,4 @@
-from aiohttp import client_middleware_digest_auth
+import os
 import torch
 import subprocess
 import argparse
@@ -8,6 +8,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to Axolotl YAML config")
     args = parser.parse_args()
+
+    # Apply the memory fragmentation fix globally inside the script
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     # Detect the GPUs and their VRAM
     if not torch.cuda.is_available():
@@ -28,9 +31,9 @@ def main():
         args.config
     ]
 
-    # Add overrides based on VRAM and GPU Count
+    # 2. Add overrides based on VRAM
     if vram_gb < 30:
-        print("[Override] <30GB VRAM detected. Injecting 24GB safety limits...")
+        print("[Override] <30GB VRAM detected. Injecting safety limits...")
         cmd.extend([
             "--micro_batch_size", "1",
             "--gradient_accumulation_steps", "8"
@@ -41,6 +44,13 @@ def main():
             "--micro_batch_size", "4",
             "--gradient_accumulation_steps", "2"
         ])
+
+    # Add DeepSpeed toggle based on GPU count
+    if num_gpus > 1:
+        print("[Override] Multiple GPUs detected. Injecting DeepSpeed ZeRO-3...")
+        cmd.extend(["--deepspeed", "config/zero3.json"])
+    else:
+        print("[Override] Single GPU detected. Running native PyTorch (No DeepSpeed).")
 
     # Execute Training
     print(f"\nExecuting: {' '.join(cmd)}\n")

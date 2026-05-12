@@ -50,5 +50,3 @@ warmup_steps: 10
 evals_per_epoch: 0
 saves_per_epoch: 1
 weight_decay: 0.0
-
-deepspeed: config/zero3.json
