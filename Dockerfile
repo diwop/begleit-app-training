@@ -8,26 +8,26 @@ ENV PYTHONUNBUFFERED=1
 # Install uv for fast dependency management
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
-# Set working directory
-WORKDIR /workspace
+# Set working directory to avoid overwriting axolotl's /workspace
+WORKDIR /app
 
 # Copy project files
-COPY data/ /workspace/data/
-COPY src/ /workspace/src/
-COPY tests/ /workspace/tests/
-COPY config/ /workspace/config/
-COPY pyproject.toml /workspace/
+COPY data/ /app/data/
+COPY src/ /app/src/
+COPY tests/ /app/tests/
+COPY config/ /app/config/
+COPY pyproject.toml /app/
 
 # Prepare data before training
 RUN python src/prepare_data.py
 
-# Install testing/data prep dependencies natively using uv
-RUN uv pip install --system \
+# Install testing/data prep dependencies natively using uv into the active python env
+RUN uv pip install --python $(which python) \
     datasets \
     pytest
 
 # Create output directory
-RUN mkdir -p /workspace/output
+RUN mkdir -p /app/output
 
 # Run unit tests to validate the environment during build
 ENV IN_DOCKER=true
