@@ -1,23 +1,28 @@
 base_model: cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit
+# Note: load_in_4bit is omitted because AWQ models are already explicitly formatted in 4-bit
 
 adapter: qlora
 peft_use_dora: true
 
 datasets:
   - path: data/axolotl_dataset.jsonl
-    type: sharegpt
-    conversation: sharegpt
+    type: chat_template
+    field_messages: conversations
+    message_property_mappings:
+      role: from
+      content: value
+    chat_template: mistral
 
 dataset_prepared_path: last_run_prepared
 val_set_size: 0
-output_dir: /workspace/output
+output_dir: /app/output
 
 sequence_len: 1024
 sample_packing: true
 pad_to_sequence_len: true
 
 micro_batch_size: 1
-gradient_accumulation_steps: 8 # Higher accumulation to offset memory usage of 24B
+gradient_accumulation_steps: 8
 num_epochs: 1
 optimizer: adamw_bnb_8bit
 lr_scheduler: cosine
@@ -28,3 +33,5 @@ gradient_checkpointing_kwargs:
   use_reentrant: false
 
 flash_attention: true
+
+deepspeed: config/zero3.json
