@@ -1,26 +1,35 @@
-base_model: unsloth/mixtral-8x7b-v0.1-bnb-4bit
+base_model: unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit
 load_in_4bit: true
 
 adapter: qlora
-peft_use_dora: true
+lora_r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+lora_target_linear: true
 
 datasets:
   - path: data/axolotl_dataset.jsonl
-    type: sharegpt
-    conversation: sharegpt
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content
 
 dataset_prepared_path: last_run_prepared
 val_set_size: 0
-output_dir: /workspace/output
+output_dir: /app/output
 
 sequence_len: 1024
 sample_packing: true
 pad_to_sequence_len: true
 
+# default: optimized for multiple 24GB VRAM cards
 micro_batch_size: 1
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 8
+
 num_epochs: 1
-optimizer: adamw_bnb_8bit
+optimizer: paged_adamw_8bit # reduces VRAM usage
 lr_scheduler: cosine
 learning_rate: 0.0002
 
@@ -34,18 +43,10 @@ gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
 
-early_stopping_patience:
-resume_from_checkpoint:
-local_rank:
 logging_steps: 1
-xformers_attention:
 flash_attention: true
 
 warmup_steps: 10
 evals_per_epoch: 0
 saves_per_epoch: 1
-debug:
-deepspeed:
 weight_decay: 0.0
-fsdp:
-fsdp_config:

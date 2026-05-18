@@ -7,7 +7,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  #  Check for actual changes to the docker image
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docker_files: ${{ steps.filter.outputs.docker_files }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docker_files:
+              - 'runner/**'
+              - 'Dockerfile'
+
+  # Build and Push
   build-docker-image:
+    needs: detect-changes
+    # Run ONLY IF docker image changed or if the user manually triggered the workflow
+    if: needs.detect-changes.outputs.docker_files == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

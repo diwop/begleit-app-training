@@ -1,37 +1,17 @@
-# Use an official Axolotl compatible base image
-FROM winglian/axolotl:main-py3.10-cu121-2.3.1
+# Pick base image with CUDA 12.1 which is optimized for HSUper A100 and L40S GPUs
+FROM axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1
 
-# Set environment variables
+# Make Axolotl available globally
+ENV PATH="/root/miniconda3/envs/py3.11/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install uv for fast dependency management
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+# Pre-install heavy dependencies so the runtime install is fast
+RUN pip install --no-cache-dir clearml pytest datasets
 
-# Set working directory
-WORKDIR /workspace
+WORKDIR /runner
 
-# Copy project files
-COPY data/ /workspace/data/
-COPY src/ /workspace/src/
-COPY tests/ /workspace/tests/
-COPY config/ /workspace/config/
-COPY pyproject.toml /workspace/
+COPY runner/entrypoint.sh /runner/entrypoint.sh
+RUN chmod +x /runner/entrypoint.sh
 
-# Prepare data before training
-RUN python src/prepare_data.py
-
-# Install testing/data prep dependencies natively using uv
-RUN uv pip install --system \
-    datasets \
-    pytest
-
-# Create output directory
-RUN mkdir -p /workspace/output
-
-# Run unit tests to validate the environment during build
-ENV IN_DOCKER=true
-RUN python -m pytest tests/
-
-# Set entrypoint to run axolotl
-ENTRYPOINT ["accelerate", "launch", "-m", "axolotl.cli.train", "config/train.yml"]
+ENTRYPOINT ["/runner/entrypoint.sh"]

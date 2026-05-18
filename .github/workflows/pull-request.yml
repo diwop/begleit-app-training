@@ -30,8 +30,26 @@ jobs:
       - name: Run Pytest
         run: uv run pytest tests/
 
+  # Detect if Dockerfile or the runner changed
+  detect-changes:
+    name: Detect File Changes
+    runs-on: ubuntu-latest
+    outputs:
+      docker_files: ${{ steps.filter.outputs.docker_files }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docker_files:
+              - 'runner/**'
+              - 'Dockerfile'
+
   test-docker:
     name: Test Docker Build
+    needs: detect-changes
+    # Only run this job if the filter detected changes in runner/ or Dockerfile
+    if: needs.detect-changes.outputs.docker_files == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -3,8 +3,8 @@ import os
 
 def load_and_format_data(input_file: str, output_file: str) -> list:
     """
-    Loads a JSONL file and formats it into Axolotl's ShareGPT format, saving it to output_file.
-    Returns the loaded structured data.
+    Loads a JSONL file and formats it into the modern OpenAI Chat format
+    (required by Axolotl's chat_template), saving it to output_file.
     """
     formatted_data = []
     
@@ -17,16 +17,16 @@ def load_and_format_data(input_file: str, output_file: str) -> list:
             user = entry.get("user", "")
             assistant = entry.get("assistant", "")
             
-            conversations = []
+            messages = []
             if system:
-                conversations.append({"from": "system", "value": system})
+                messages.append({"role": "system", "content": system})
             if user:
-                conversations.append({"from": "human", "value": user})
+                messages.append({"role": "user", "content": user})
             if assistant:
-                conversations.append({"from": "gpt", "value": assistant})
+                messages.append({"role": "assistant", "content": assistant})
                 
-            if conversations:
-                formatted_data.append({"conversations": conversations})
+            if messages:
+                formatted_data.append({"messages": messages})
                 
     with open(output_file, "w", encoding="utf-8") as out_f:
         for item in formatted_data:
