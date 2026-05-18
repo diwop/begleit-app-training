@@ -1,6 +1,10 @@
 import sys
-import pytest
 from unittest.mock import patch, MagicMock
+
+# Mock torch before importing anything that depends on it
+sys.modules['torch'] = MagicMock()
+
+import pytest
 from src.launcher import main
 
 @pytest.fixture
