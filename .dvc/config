@@ -1,0 +1,5 @@
+[core]
+    autostage = true
+    remote = local_test_remote
+['remote "local_test_remote"']
+    url = ../data/s3-mock

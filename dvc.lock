@@ -1,0 +1,27 @@
+schema: '2.0'
+stages:
+  prepare_data:
+    cmd: python src/prepare_dataset.py
+    deps:
+    - path: data/prompt-template.md
+      hash: md5
+      md5: 13c652e6b7c3cd9bcf7ff78ba4b67206
+      size: 207
+    - path: data/raw/
+      hash: md5
+      md5: afbdade8eee8d34209872a7ee25d9504.dir
+      size: 13331
+      nfiles: 9
+    - path: data/system-prompt.md
+      hash: md5
+      md5: 1d627a388d18acb2cd978e4b191de841
+      size: 6694
+    - path: src/prepare_dataset.py
+      hash: md5
+      md5: 4233ef49af29be077d64d52b94791554
+      size: 2905
+    outs:
+    - path: data/train/dataset.jsonl
+      hash: md5
+      md5: f0f2e0cde6461dd1864a6cf3cf3498e5
+      size: 27272

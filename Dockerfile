@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 # Pre-install heavy dependencies so the runtime install is fast
-RUN pip install --no-cache-dir clearml pytest datasets
+RUN pip install --no-cache-dir clearml pytest datasets dvc
 
 WORKDIR /runner
 

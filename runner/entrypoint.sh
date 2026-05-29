@@ -21,10 +21,10 @@ fi
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 
-# 3. Prepare the datasets
-echo "Preparing datasets..."
-python src/prepare_data.py
+# Pull the dataset
+echo "Pulling dataset from DVC..."
+dvc pull
 
-# 4. Hand off to the dynamic hardware launcher
+# Hand off to the dynamic hardware launcher
 echo "Executing dynamic hardware launcher..."
 python src/launcher.py --config "config/${TRAIN}.yml"
