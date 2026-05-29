@@ -8,7 +8,7 @@ lora_dropout: 0.05
 lora_target_linear: true
 
 datasets:
-  - path: data/axolotl_dataset.jsonl
+  - path: data/train/dataset.jsonl
     type: chat_template
     chat_template: tokenizer_default
     field_messages: messages

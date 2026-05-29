@@ -19,6 +19,7 @@ git --version && \
 echo "docker" && \
 echo "python3" && python3 --version && \
 echo "uv" && uv --version && \
+echo "dvc" && dvc --version && \
 echo "done"
 ```
 
@@ -41,6 +42,7 @@ If there are missing dependencies:
 | docker  | brew install --cask docker | sudo apt install docker.io                 | winget install Docker.DockerDesktop                         |
 | python3 | brew install python@3.12   | sudo apt install python3 python3-pip       | winget install Python.Python.3.12                           |
 | uv      | brew install uv            | curl -LsSf https://astral.sh/uv/install.sh | powershell -c "irm https://astral.sh/uv/install.ps1 \| iex" |
+| dvc     | brew install dvc           | snap install dvc --classic                 | winget install --id Iterative.DVC                           |
 
 # Git Repo
 

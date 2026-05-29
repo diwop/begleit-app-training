@@ -1,17 +1,17 @@
 # Implementation Details
 
-- **Dataset Preparation:** The conversational data is stored in `data/sample_dataset.jsonl` (with dataset versions tracked via DVC in the `begleit-app-data` repository). `src/prepare_data.py` handles loading and formatting the dataset into an Axolotl-compatible ShareGPT JSONL format (`data/axolotl_dataset.jsonl`).
-- **Testing:** Unit tests have been written in `tests/test_data.py` and are verified via `pytest` to ensure structural integrity of the dataset mappings.
-- **Training Configuration:** `config/train.yml` utilizes Axolotl to load `unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit` in 4-bit quantization. It configures a QDoRA/QLoRA adapter. Checkpoints and final adapters are saved to `/app/output`.
-- **Containerization:** The environment is containerized using the `axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1` base image. The code and data are decoupled from the image; instead, `runner/entrypoint.sh` clones the repository at runtime to ensure the latest changes are used without requiring a Docker rebuild.
-- **CI/CD:** GitHub Actions have been configured to automatically test Python code, verify the Docker build via a dry run on pull requests, and push the image to the GitHub Container Registry (GHCR) upon merges to `main`. Dependabot is also fully configured to track both Python (`pip`) and `docker` updates.
+- **Dataset Preparation:** The raw dataset consists of paired Markdown or text files under `data/raw/` (e.g., `<id>_Standardsprache` and `<id>_Leichte_Sprache`) tracked via DVC. A Python compiler (`src/prepare_dataset.py`) pairs these files, combines them using a global system prompt (`data/system-prompt.md`) and a user prompt template (`data/prompt-template.md`), and compiles the training dataset into `data/train/dataset.jsonl`. For local testing, S3 remote storage is mocked as a local folder (`data/s3-mock/`).
+- **Testing:** Unit tests are configured via `pytest` to verify the execution and behavior of the dynamic hardware launcher (`tests/test_launcher.py`). The dataset pipeline structure is validated via DVC status checks on PRs.
+- **Training Configuration:** `config/train.yml` utilizes Axolotl to load `unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit` in 4-bit quantization and configure a QDoRA/QLoRA adapter. It targets the compiled dataset `data/train/dataset.jsonl`. Checkpoints and final adapters are saved to `/app/output`.
+- **Containerization:** The environment is containerized using the `axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1` base image. The code and data are decoupled from the image; instead, `runner/entrypoint.sh` clones the repository at runtime, pulls the dataset using `dvc pull` (with `dvc` pre-installed in the Docker image), and hands off execution to the launcher.
+- **CI/CD:** GitHub Actions are configured to run Python tests, execute DVC checks (`validate-data` job using `dvc status` to verify that the compiled training dataset is up to date), run Docker build dry-runs on pull requests, and push the production image to the GitHub Container Registry (GHCR) upon merges to `main`. Dependabot is also configured to track updates.
 
 ## Technical Choices
 
 - **Local Package Manager:** `uv` is used for fast and deterministic dependency resolution during local development and testing (via `uv.lock`). Inside the container, standard `pip` is used to pre-install heavy dependencies quickly.
 - **Base Image:** We chose `axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1` to leverage an official Axolotl environment where flash-attention and deepspeed are already pre-compiled and configured for PyTorch and CUDA.
 - **Dynamic Hardware Launcher:** `src/launcher.py` acts as a dynamic entry point. It automatically detects the number of GPUs and their VRAM, adjusts `micro_batch_size` and `gradient_accumulation_steps` to prevent Out-Of-Memory errors, and enables DeepSpeed ZeRO-3 if multiple GPUs are present.
-- **Decoupled Execution:** To iterate faster, the codebase and dataset are not embedded in the container. The `ENTRYPOINT` clones the repository at runtime, allowing code changes to run immediately on platforms like RunPod without rebuilding the 10GB+ Docker image.
+- **Decoupled Execution:** To iterate faster, the codebase and dataset are not embedded in the container. The `ENTRYPOINT` clones the repository at runtime and pulls the dataset via DVC (`dvc pull`), allowing code and data changes to run immediately on platforms like RunPod without rebuilding the 10GB+ Docker image.
 
 ## Model Configurations & Hardware Scaling
 
