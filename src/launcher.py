@@ -1,5 +1,4 @@
 import os
-import torch
 import subprocess
 import argparse
 import sys
@@ -15,6 +14,8 @@ def merge_configs(base_path: str, override_path: str):
     return OmegaConf.merge(base_cfg, override_cfg)
 
 def main():
+    import torch
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to Axolotl YAML config")
     args = parser.parse_args()

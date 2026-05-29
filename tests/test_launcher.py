@@ -10,8 +10,8 @@ from src.launcher import main
 
 @pytest.fixture
 def mock_cuda():
-    with patch("src.launcher.torch.cuda") as mock:
-        yield mock
+    import torch
+    yield torch.cuda
 
 @pytest.fixture
 def mock_subprocess():

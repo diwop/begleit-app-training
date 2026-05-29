@@ -2,6 +2,7 @@ import os
 import re
 import json
 from pathlib import Path
+from transformers import AutoTokenizer
 
 def read_file(path: Path) -> str:
     """Helper to read file contents cleanly."""
@@ -25,6 +26,11 @@ def main():
     # 3. Scan the src-data directory using regex to capture the exact ID string
     # Matches both .md and .txt variations
     pattern = re.compile(r"^(\d+)_(Standardsprache|Leichte_Sprache)\.(md|txt)$")
+
+    TOKENIZER_NAME = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+    print(f"Loading tokenizer from {TOKENIZER_NAME}...")
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+    MAX_LEN = 4096
 
     standardsprache_files = {}
     leichte_sprache_files = {}
