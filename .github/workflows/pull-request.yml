@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: iterative/setup-dvc@v1
+      - name: Pull dataset from DVC
+        run: dvc pull
       - name: Check if final dataset is up-to-date with raw data
         run: dvc status; dvc status -q # First for visibility, second to fail if invalid
 
