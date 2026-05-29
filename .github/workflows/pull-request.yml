@@ -58,7 +58,11 @@ jobs:
 
   test-docker:
     name: Test Docker Build
-    needs: detect-changes
+    needs:
+      - detect-changes
+      - check-dependabot # docker build consumes so much time (avoid running if others failed)
+      - validate-data
+      - test-python
     # Only run this job if the filter detected changes in runner/ or Dockerfile
     if: needs.detect-changes.outputs.docker_files == 'true'
     runs-on: ubuntu-latest
