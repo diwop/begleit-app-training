@@ -1,17 +1,20 @@
 import sys
 from unittest.mock import patch, MagicMock
-from src.launcher import merge_configs
-
-# Mock torch before importing anything that depends on it
-sys.modules['torch'] = MagicMock()
-
 import pytest
-from src.launcher import main
+import torch
+from src.launcher import merge_configs, main
 
 @pytest.fixture
 def mock_cuda():
-    import torch
-    yield torch.cuda
+    with patch("torch.cuda.is_available") as mock_is_available, \
+         patch("torch.cuda.device_count") as mock_device_count, \
+         patch("torch.cuda.get_device_properties") as mock_get_device_properties:
+        
+        mock_obj = MagicMock()
+        mock_obj.is_available = mock_is_available
+        mock_obj.device_count = mock_device_count
+        mock_obj.get_device_properties = mock_get_device_properties
+        yield mock_obj
 
 @pytest.fixture
 def mock_subprocess():

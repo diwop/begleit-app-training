@@ -42,3 +42,12 @@ To run with your custom configuration:
 ```bash
 docker run -e TRAIN="train-my-model" -v /path/to/persistent/volume:/app ghcr.io/diwop/begleit-app-training:main
 ```
+
+## Sequence Length Validation
+
+To avoid runtime out-of-memory (OOM) errors during fine-tuning, the data preparation step (`src/prepare_dataset.py`) automatically validates the token count of each compiled conversation pair against `sequence_len` in `config/base.yml` (default `4096`).
+
+- The tokenizer used for token count validation is `cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit` (which optimizes local cache access).
+- If any conversation pair exceeds the token limit, the dataset compilation fails with an exit code of `1`.
+- If your dataset contains longer sequences, you will need to increase `sequence_len` in `config/base.yml`. Note that this will increase the GPU VRAM requirements during training, and you may need to reduce `micro_batch_size` or upgrade your GPU tier to compensate.
+
