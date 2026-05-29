@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "datasets>=2.16.0",
+    "omegaconf>=2.3.0",
     "pytest>=8.0.0",
 ]
 

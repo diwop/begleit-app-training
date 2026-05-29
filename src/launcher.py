@@ -3,6 +3,16 @@ import torch
 import subprocess
 import argparse
 import sys
+from omegaconf import OmegaConf
+
+def merge_configs(base_path: str, override_path: str):
+    """
+    Loads and merges a base YAML and an override YAML.
+    Override values take precedence.
+    """
+    base_cfg = OmegaConf.load(base_path)
+    override_cfg = OmegaConf.load(override_path)
+    return OmegaConf.merge(base_cfg, override_cfg)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -23,15 +33,22 @@ def main():
 
     print(f"\n[Hardware Detected] {num_gpus} GPUs | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
+    # Merge the selected config file with the base
+    merged_cfg = merge_configs("config/base.yml", args.config)
+
+    # Save the finalized, resolved config for Axolotl to read
+    temp_config_path = ".merged-train.yml"
+    OmegaConf.save(config=merged_cfg, f=temp_config_path)
+
     # Construct the base command for the training
     cmd = [
         "accelerate", "launch",
         "--num_processes", str(num_gpus),
         "-m", "axolotl.cli.train",
-        args.config
+        ".merged-train.yml"
     ]
 
-    # 2. Add overrides based on VRAM
+    # Add overrides based on VRAM
     if vram_gb < 30:
         print("[Override] <30GB VRAM detected. Injecting safety limits...")
         cmd.extend([
@@ -58,7 +75,7 @@ def main():
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         print(f"Training failed with exit code {e.returncode}")
-        sys.exit(1)
+        sys.exit(1)        
 
 if __name__ == "__main__":
     main()

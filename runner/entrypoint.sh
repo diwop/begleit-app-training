@@ -18,12 +18,16 @@ if [ "$REPO_URL" != "$DEFAULT_REPO" ]; then
 fi
 
 # Clone the requested branch into a fresh workspace
+rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 
 # Pull the dataset
 echo "Pulling dataset from DVC..."
 dvc pull
+
+# Configure a directory that is mounted into container if its state is persistent (avoids re-downloading models)
+export HF_HOME="/app/huggingface_cache"
 
 # Hand off to the dynamic hardware launcher
 echo "Executing dynamic hardware launcher..."

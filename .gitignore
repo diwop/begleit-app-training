@@ -34,3 +34,6 @@ venv.bak/
 # HuggingFace & Cache
 .cache/
 huggingface/
+
+# Transient configs
+.merged-train.yml
