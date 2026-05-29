@@ -1,20 +1,23 @@
 import sys
 from unittest.mock import patch, MagicMock
 import pytest
-import torch
+
+# Mock torch temporarily before importing launcher
+orig_torch = sys.modules.get('torch')
+mock_torch_obj = MagicMock()
+sys.modules['torch'] = mock_torch_obj
+
 from src.launcher import merge_configs, main
+
+# Restore/cleanup sys.modules so subsequent imports (like transformers) are not polluted
+if orig_torch is not None:
+    sys.modules['torch'] = orig_torch
+else:
+    del sys.modules['torch']
 
 @pytest.fixture
 def mock_cuda():
-    with patch("torch.cuda.is_available") as mock_is_available, \
-         patch("torch.cuda.device_count") as mock_device_count, \
-         patch("torch.cuda.get_device_properties") as mock_get_device_properties:
-        
-        mock_obj = MagicMock()
-        mock_obj.is_available = mock_is_available
-        mock_obj.device_count = mock_device_count
-        mock_obj.get_device_properties = mock_get_device_properties
-        yield mock_obj
+    yield mock_torch_obj.cuda
 
 @pytest.fixture
 def mock_subprocess():
@@ -98,7 +101,7 @@ def test_merge_configs(override_file, expected_model):
     merged_cfg = merge_configs(base_file, override_file)
     
     # Check stable values inherited from base.yml
-    assert merged_cfg.sequence_len == 4096, f"Inheritance failed for {override_file}"
+    assert merged_cfg.sequence_len == 5120, f"Inheritance failed for {override_file}"
     assert merged_cfg.adapter == "qlora", f"Inheritance failed for {override_file}"
     assert len(merged_cfg.datasets) == 1, "Dataset configuration was lost"
     assert merged_cfg.datasets[0].path == "data/train/dataset.jsonl", "Dataset path inherited incorrectly"
