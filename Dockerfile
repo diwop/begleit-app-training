@@ -14,7 +14,7 @@ WORKDIR /runner
 COPY pyproject.toml uv.lock ./
 
 # Pre-install heavy dependencies so the runtime install is fast
-RUN uv export --format requirements-txt > requirements.txt && \
+RUN uv export --no-emit-project --format requirements-txt > requirements.txt && \
     uv pip install --system --no-cache -r requirements.txt
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
