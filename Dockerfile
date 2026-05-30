@@ -6,10 +6,16 @@ ENV PATH="/root/miniconda3/envs/py3.11/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Pre-install heavy dependencies so the runtime install is fast
-RUN pip install --no-cache-dir clearml pytest datasets dvc
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /runner
+
+# Copy dependency definition files
+COPY pyproject.toml uv.lock ./
+
+# Pre-install heavy dependencies so the runtime install is fast
+RUN uv export --no-emit-project --format requirements-txt > requirements.txt && \
+    uv pip install --system --no-cache -r requirements.txt
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh

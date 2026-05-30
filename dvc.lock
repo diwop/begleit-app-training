@@ -1,7 +1,7 @@
 schema: '2.0'
 stages:
   prepare_data:
-    cmd: python src/prepare_dataset.py
+    cmd: uv run python src/prepare_dataset.py
     deps:
     - path: data/prompt-template.md
       hash: md5
@@ -18,8 +18,8 @@ stages:
       size: 6694
     - path: src/prepare_dataset.py
       hash: md5
-      md5: 4233ef49af29be077d64d52b94791554
-      size: 2905
+      md5: 6b7c3cfa46c7e820319321fa1eacd8ee
+      size: 6012
     outs:
     - path: data/train/dataset.jsonl
       hash: md5

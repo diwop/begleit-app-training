@@ -1,6 +1,6 @@
 stages:
   prepare_data:
-    cmd: python src/prepare_dataset.py
+    cmd: uv run python src/prepare_dataset.py
     deps:
       - data/system-prompt.md
       - data/prompt-template.md
