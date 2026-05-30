@@ -22,6 +22,11 @@ rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 
+# Install any new dependencies from the cloned repo's manifest (installs the delta since the Docker image build)
+echo "Syncing package dependencies..."
+uv export --no-emit-project --format requirements-txt > requirements.txt
+uv pip install --system -r requirements.txt
+
 # Pull the dataset
 echo "Pulling dataset from DVC..."
 python -m dvc pull

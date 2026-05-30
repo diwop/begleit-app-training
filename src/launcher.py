@@ -73,8 +73,31 @@ def main():
     print(f"\nExecuting: {' '.join(cmd)}\n")
     try:
         subprocess.run(cmd, check=True)
+        print("\n[Success] Training completed successfully!")
     except subprocess.CalledProcessError as e:
-        print(f"Training failed with exit code {e.returncode}")
+        print(f"\n[FATAL ERROR] Training failed with exit code {e.returncode}")
+        sys.exit(1)
+
+    # Run Evaluation
+    print("\nStarting post-training evaluation...")
+    
+    # Ensure the target directory exists just in case
+    os.makedirs("/app/output/adapter", exist_ok=True)
+
+    eval_cmd = [
+        "python", "src/evaluation.py",
+        "--base_model", str(merged_cfg.base_model),
+        "--adapter_path", "/app/output/adapter",
+        "--dataset_path", str(merged_cfg.datasets[0].path),
+        "--output_file", "/app/output/adapter/evaluation_results.jsonl"
+    ]
+
+    print(f"Executing Evaluation: {' '.join(eval_cmd)}\n")
+    try:
+        subprocess.run(eval_cmd, check=True)
+        print("\n[Success] Pipeline finished! Results saved to /app/output/adapter/evaluation_results.jsonl")
+    except subprocess.CalledProcessError as e:
+        print(f"\n[ERROR] Evaluation failed with exit code {e.returncode}")
         sys.exit(1)        
 
 if __name__ == "__main__":

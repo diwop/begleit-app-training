@@ -15,7 +15,7 @@ datasets:
 
 dataset_prepared_path: last_run_prepared
 val_set_size: 0
-output_dir: /app/output
+output_dir: /app/output/adapter
 
 sequence_len: 12288
 sample_packing: true

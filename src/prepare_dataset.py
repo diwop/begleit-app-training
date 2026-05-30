@@ -26,6 +26,15 @@ def calculate_token_count(messages: list, tokenizer) -> int:
             raw_text = "\n".join([m["content"] for m in messages])
             return len(tokenizer.encode(raw_text))
 
+def calculate_percentile(values: list, percentile: float) -> int:
+    """Calculates a simple percentile from a list of integer values."""
+    if not values:
+        return 0
+    sorted_values = sorted(values)
+    index = int(len(sorted_values) * percentile)
+    index = min(max(index, 0), len(sorted_values) - 1)
+    return sorted_values[index]
+
 def main():
     # 1. Define paths based on your dvc.yaml structure
     src_data_dir = Path("data/raw")
@@ -94,6 +103,11 @@ def main():
     total_samples = 0
     exceeded_count = 0
     max_token_count = 0
+    sum_total_tokens = 0
+    sum_assistant_tokens = 0
+    max_assistant_token_count = 0
+    all_total_tokens = []
+    all_assistant_tokens = []
 
     # 5. Process pairs, validate tokens, and construct the JSONL dataset
     with open(output_file, "w", encoding="utf-8") as f_out:
@@ -115,9 +129,19 @@ def main():
 
             # Validate token count
             token_count = calculate_token_count(messages, tokenizer)
+            assistant_token_count = len(tokenizer.encode(leichte_text))
+
+            # Update trackers
+            all_total_tokens.append(token_count)
+            all_assistant_tokens.append(assistant_token_count)
+            sum_total_tokens += token_count
+            sum_assistant_tokens += assistant_token_count
 
             if token_count > max_token_count:
                 max_token_count = token_count
+
+            if assistant_token_count > max_assistant_token_count:
+                max_assistant_token_count = assistant_token_count
 
             if token_count > MAX_LEN:
                 print(f"[WARNING] Pair {idx} is {token_count} tokens (Exceeds {MAX_LEN} limit)")
@@ -129,13 +153,34 @@ def main():
             # Write single JSON line
             f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    avg_total_tokens = sum_total_tokens / total_samples if total_samples > 0 else 0
+    avg_assistant_tokens = sum_assistant_tokens / total_samples if total_samples > 0 else 0
+
+    p50_total = calculate_percentile(all_total_tokens, 0.5)
+    p75_total = calculate_percentile(all_total_tokens, 0.75)
+    p90_total = calculate_percentile(all_total_tokens, 0.9)
+    p50_assistant = calculate_percentile(all_assistant_tokens, 0.5)
+    p75_assistant = calculate_percentile(all_assistant_tokens, 0.75)
+    p90_assistant = calculate_percentile(all_assistant_tokens, 0.9)
+
     # 6. Print Summary Report
     print("\n" + "=" * 60)
     print("                  DATASET VALIDATION SUMMARY")
     print("=" * 60)
     print(f" Total Samples Checked : {total_samples}")
-    print(f" Max Token Count Found : {max_token_count} (Limit: {MAX_LEN})")
+    print(" Tokens:")
+    print(f"   50% : {p50_total}")
+    print(f"   75% : {p75_total}")
+    print(f"   90% : {p90_total}")
+    print(f"   Max : {max_token_count} (Limit: {MAX_LEN})")
+    print(f"   Avg : {avg_total_tokens}")
     print(f" Samples Over Limit    : {exceeded_count}")
+    print("\n Assistant Tokens:")
+    print(f"   50% : {p50_assistant}")
+    print(f"   75% : {p75_assistant}")
+    print(f"   90% : {p90_assistant}")
+    print(f"   Max : {max_assistant_token_count}")
+    print(f"   Avg : {avg_assistant_tokens}")
     print("=" * 60 + "\n")
 
     # 7. Fail the pipeline if necessary

@@ -24,6 +24,11 @@ def mock_subprocess():
     with patch("src.launcher.subprocess.run") as mock:
         yield mock
 
+@pytest.fixture(autouse=True)
+def mock_makedirs():
+    with patch("src.launcher.os.makedirs") as mock:
+        yield mock
+
 def test_no_cuda_exits(mock_cuda):
     mock_cuda.is_available.return_value = False
     with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
@@ -42,15 +47,18 @@ def test_single_gpu_low_vram(mock_cuda, mock_subprocess):
     with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
         main()
 
-    # Verify subprocess call
-    mock_subprocess.assert_called_once()
-    cmd = mock_subprocess.call_args[0][0]
+    # Verify subprocess calls (1 training call, 1 evaluation call)
+    assert mock_subprocess.call_count == 2
+    cmd = mock_subprocess.call_args_list[0][0][0]
     
     assert "accelerate" in cmd
     assert cmd[cmd.index("--num_processes") + 1] == "1"
     assert cmd[cmd.index("--micro_batch_size") + 1] == "1"
     assert cmd[cmd.index("--gradient_accumulation_steps") + 1] == "8"
     assert "--deepspeed" not in cmd
+
+    eval_cmd = mock_subprocess.call_args_list[1][0][0]
+    assert "src/evaluation.py" in eval_cmd
 
 def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     mock_cuda.is_available.return_value = True
@@ -63,8 +71,8 @@ def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
         main()
 
-    mock_subprocess.assert_called_once()
-    cmd = mock_subprocess.call_args[0][0]
+    assert mock_subprocess.call_count == 2
+    cmd = mock_subprocess.call_args_list[0][0][0]
     
     assert "accelerate" in cmd
     assert cmd[cmd.index("--num_processes") + 1] == "4"
@@ -72,6 +80,9 @@ def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     assert cmd[cmd.index("--gradient_accumulation_steps") + 1] == "2"
     assert "--deepspeed" in cmd
     assert cmd[cmd.index("--deepspeed") + 1] == "config/zero3.json"
+
+    eval_cmd = mock_subprocess.call_args_list[1][0][0]
+    assert "src/evaluation.py" in eval_cmd
 
 
 # Define the files and their expected base_model outcomes
