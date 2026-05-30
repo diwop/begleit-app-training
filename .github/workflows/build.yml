@@ -61,8 +61,6 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Show Image Size
         run: |
           IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
@@ -72,8 +70,8 @@ jobs:
         run: |
           IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
           echo "Running dependency sanity check inside the container..."
-          echo "The dependencies need to match the PyTorch version of the docker base image."          
-          docker run --rm $IMAGE_NAME python -c "
+          # Use --entrypoint to completely bypass launcher.py for this test
+          docker run --rm --entrypoint python $IMAGE_NAME -c "
           import torch
           import transformers
           print(f'PyTorch Version: {torch.__version__}')
