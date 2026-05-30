@@ -9,9 +9,9 @@ stages:
       size: 207
     - path: data/raw/
       hash: md5
-      md5: afbdade8eee8d34209872a7ee25d9504.dir
-      size: 13331
-      nfiles: 9
+      md5: ea467c6fb97086663499421017e56aab.dir
+      size: 140116
+      nfiles: 33
     - path: data/system-prompt.md
       hash: md5
       md5: 1d627a388d18acb2cd978e4b191de841
@@ -23,5 +23,5 @@ stages:
     outs:
     - path: data/train/dataset.jsonl
       hash: md5
-      md5: f0f2e0cde6461dd1864a6cf3cf3498e5
-      size: 27272
+      md5: 81518dbdf389a1f5fec9e6bb6eef7c61
+      size: 196808

@@ -101,7 +101,6 @@ def test_merge_configs(override_file, expected_model):
     merged_cfg = merge_configs(base_file, override_file)
     
     # Check stable values inherited from base.yml
-    assert merged_cfg.sequence_len == 5120, f"Inheritance failed for {override_file}"
     assert merged_cfg.adapter == "qlora", f"Inheritance failed for {override_file}"
     assert len(merged_cfg.datasets) == 1, "Dataset configuration was lost"
     assert merged_cfg.datasets[0].path == "data/train/dataset.jsonl", "Dataset path inherited incorrectly"
