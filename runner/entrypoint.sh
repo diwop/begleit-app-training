@@ -24,7 +24,7 @@ cd /runner/repo
 
 # Pull the dataset
 echo "Pulling dataset from DVC..."
-dvc pull
+python -m dvc pull
 
 # Configure a directory that is mounted into container if its state is persistent (avoids re-downloading models)
 export HF_HOME="/app/huggingface_cache"
