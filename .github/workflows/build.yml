@@ -58,8 +58,32 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Show Image Size
+        run: |
+          IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
+          echo "Uncompressed Local Image Size:"
+          docker images $IMAGE_NAME
+      - name: Environment Smoke Test
+        run: |
+          IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
+          echo "Running dependency sanity check inside the container..."
+          echo "The dependencies need to match the PyTorch version of the docker base image."          
+          docker run --rm $IMAGE_NAME python -c "
+          import torch
+          import transformers
+          print(f'PyTorch Version: {torch.__version__}')
+          print(f'Transformers Version: {transformers.__version__}')
+          assert transformers.is_torch_available(), 'CRITICAL: Transformers cannot find PyTorch!'
+          print('Success: PyTorch and Transformers are fully compatible!')
+          "
+      - name: Push Docker image to GHCR
+        run: |
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            echo "Pushing $tag..."
+            docker push $tag
+          done          

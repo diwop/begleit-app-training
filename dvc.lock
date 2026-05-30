@@ -18,8 +18,8 @@ stages:
       size: 6694
     - path: src/prepare_dataset.py
       hash: md5
-      md5: 6b7c3cfa46c7e820319321fa1eacd8ee
-      size: 6012
+      md5: cd6361a8ed4c6501574cb377da01b0bb
+      size: 7917
     outs:
     - path: data/train/dataset.jsonl
       hash: md5
