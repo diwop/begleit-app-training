@@ -49,11 +49,12 @@ jobs:
       - name: Free up GitHub runner disk space # otherwise the huge docker build fails
         run: |
           echo "Freeing up disk space"
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
           docker system prune -af
+          # these are not necessary yet but possible if the build runs out of disk space
+          # sudo rm -rf /usr/share/dotnet
+          # sudo rm -rf /usr/local/lib/android
+          # sudo rm -rf /opt/ghc
+          # sudo rm -rf /opt/hostedtoolcache
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
