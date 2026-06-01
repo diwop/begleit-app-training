@@ -63,8 +63,8 @@ jobs:
           # -v dynamically mounts the GitHub runner's workspace into the container
           # -w sets the working directory so Python can find the tests folder
           docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
             --entrypoint python \
             $IMAGE_NAME tests/container_smoke_test.py
       - name: Push Docker image to GHCR
