@@ -45,7 +45,7 @@ docker run -e TRAIN="train-my-model" -v /path/to/persistent/volume:/app ghcr.io/
 
 ## Sequence Length Validation
 
-To avoid runtime out-of-memory (OOM) errors during fine-tuning, the data preparation step (`src/prepare_dataset.py`) automatically validates the token count of each compiled conversation pair against `sequence_len` in `config/base.yml` (default `4096`).
+To avoid runtime out-of-memory (OOM) errors during fine-tuning, the data preparation step (`src/prepare_dataset.py`) automatically validates the token count of each compiled conversation pair against `sequence_len` in `config/base.yml`.
 
 - The tokenizer used for token count validation is `cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit` (which optimizes local cache access).
 - If any conversation pair exceeds the token limit, the dataset compilation fails with an exit code of `1`.

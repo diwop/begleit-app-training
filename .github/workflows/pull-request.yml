@@ -40,3 +40,47 @@ jobs:
           python-version-file: "pyproject.toml"
       - name: Run Pytest
         run: uv run pytest tests/
+
+  #  Check for actual changes to the docker image
+  detect-changes:
+    uses: ./.github/workflows/detect-changes.yml
+
+  smoke-test:
+    name: Container Environment Test
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.docker_changed == 'true'
+    steps:
+      - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
+        run: |
+          echo "Freeing up disk space"
+          docker system prune -af
+          sudo time rm -rf /usr/share/dotnet
+          sudo time rm -rf /usr/local/lib/android
+          sudo time rm -rf /opt/ghc
+          sudo time rm -rf /opt/hostedtoolcache
+      - uses: actions/checkout@v6
+      - name: Run Smoke Test in Docker
+        run: |
+          BASE_IMAGE="axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1"
+          echo "Booting $BASE_IMAGE..."
+          
+          # We use --entrypoint bash to run a multi-command script inside the container
+          # We mount to /app to protect Axolotl's native /workspace!
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
+            --user root \
+            --entrypoint bash \
+            $BASE_IMAGE -c "
+            echo 'Installing uv...'
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH=\"\$HOME/.local/bin:\$PATH\"
+            
+            echo 'Installing dependencies...'
+            uv export --format requirements-txt > requirements.txt
+            uv pip install --system --no-cache -r requirements.txt
+            
+            echo 'Executing Smoke Test...'
+            python tests/container_smoke_test.py
+            "
