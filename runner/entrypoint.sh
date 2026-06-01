@@ -3,37 +3,19 @@ set -e
 
 DEFAULT_REPO="https://github.com/diwop/begleit-app-training.git"
 
-# Define default environment variables (overridable at runtime)
+# Define default environment variables
 BRANCH=${BRANCH:-"main"}
-TRAIN=${TRAIN:-"train"}
 REPO_URL=${REPO_URL:-"$DEFAULT_REPO"}
 
 echo "=== Initializing Worker Node ==="
-if [ "$BRANCH" != "main" ]; then
-    echo "Target Branch: $BRANCH"
-fi
-echo "Target Config: config/$TRAIN.yml"
-if [ "$REPO_URL" != "$DEFAULT_REPO" ]; then
-    echo "Custom repository: $REPO_URL"
-fi
+echo "Cloning branch '$BRANCH' from $REPO_URL..."
 
-# Clone the requested branch into a fresh workspace
 rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 
-# Install any new dependencies from the cloned repo's manifest (installs the delta since the Docker image build)
-echo "Syncing package dependencies..."
-uv export --no-emit-project --format requirements-txt > requirements.txt
-uv pip install --system -r requirements.txt
+echo "Handing off execution to repository logic..."
 
-# Pull the dataset
-echo "Pulling dataset from DVC..."
-python -m dvc pull
+chmod +x train.sh
 
-# Configure a directory that is mounted into container if its state is persistent (avoids re-downloading models)
-export HF_HOME="/app/huggingface_cache"
-
-# Hand off to the dynamic hardware launcher
-echo "Executing dynamic hardware launcher..."
-python src/launcher.py --config "config/${TRAIN}.yml"
+exec bash ./train.sh
