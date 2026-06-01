@@ -20,4 +20,4 @@ RUN uv export --no-emit-project --format requirements-txt > requirements.txt && 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
 
-ENTRYPOINT ["/runner/entrypoint.sh"]
+CMD ["/bin/bash", "/runner/entrypoint.sh"]
