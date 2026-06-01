@@ -11,6 +11,8 @@ dependencies = [
     "pytest>=8.0.0",
     "transformers<4.48",
     "dvc[s3]>=3.50.0",
+    "numpy<2.2",
+    "setuptools<80",
 ]
 
 [build-system]
