@@ -8,14 +8,23 @@ BRANCH=${BRANCH:-"main"}
 REPO_URL=${REPO_URL:-"$DEFAULT_REPO"}
 
 echo "=== Initializing Worker Node ==="
-echo "Cloning branch '$BRANCH' from $REPO_URL..."
 
+# Start JupyterLab Sidecar in the background
+echo "Starting JupyterLab..."
+
+if ! command -v jupyter &> /dev/null; then
+    uv pip install --system jupyterlab
+fi
+
+jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
+  --ServerApp.token="${JUPYTER_PASSWORD:-}" \
+  --ServerApp.password="" &
+
+echo "Cloning branch '$BRANCH' from $REPO_URL..."
 rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
-cd /runner/repo
 
-echo "Handing off execution to repository logic..."
+chmod +x /runner/repo/train.sh
 
-chmod +x train.sh
-
-exec bash ./train.sh
+echo "Handing off execution to: $@"
+exec "$@"

@@ -20,4 +20,8 @@ RUN uv export --no-emit-project --format requirements-txt > requirements.txt && 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
 
-CMD ["/bin/bash", "/runner/entrypoint.sh"]
+# Always run the set up and start Jupyter lab
+ENTRYPOINT ["/bin/bash", "/runner/entrypoint.sh"]
+
+# Set the default action to execute the current script in the repository
+CMD ["/bin/bash", "/runner/repo/train.sh"]

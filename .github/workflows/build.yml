@@ -7,15 +7,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  #  Check for actual changes to the docker image
   detect-changes:
-    uses: ./.github/workflows/detect-changes.yml
+    name: Detect changes in docker image dependencies
+    runs-on: ubuntu-latest
+    outputs:
+      docker_files: ${{ steps.filter.outputs.docker_files }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docker_files:
+              - 'runner/**'
+              - 'Dockerfile'
+              - 'pyproject.toml'
+              - 'uv.lock'
 
   build-docker-image:
     name: Build and push Docker image
     needs: detect-changes
     # Run ONLY IF docker image changed or if the user manually triggered the workflow
-    if: needs.detect-changes.outputs.docker_changed == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.detect-changes.outputs.docker_files != '' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
