@@ -41,15 +41,9 @@ jobs:
       - name: Run Pytest
         run: uv run pytest tests/
 
-  #  Check for actual changes to the docker image
-  detect-changes:
-    uses: ./.github/workflows/detect-changes.yml
-
   smoke-test:
     name: Container Environment Test
     runs-on: ubuntu-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.docker_changed == 'true'
     steps:
       - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
         run: |
