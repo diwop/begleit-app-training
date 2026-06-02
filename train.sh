@@ -6,6 +6,8 @@ TRAIN=${TRAIN:-"train"}
 export HF_HOME="/workspace/huggingface_cache"
 LOG_FILE="/workspace/training_run.log"
 
+cd /runner/repo/
+
 echo "=== Repository Execution Started ==="
 echo "Target Config: config/${TRAIN}.yml"
 echo "Logs will be saved to: $LOG_FILE"
