@@ -17,7 +17,7 @@ if ! command -v jupyter &> /dev/null; then
 fi
 
 jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
-  --ServerApp.token="${JUPYTER_PASSWORD:-}" \
+  --IdentityProvider.token="${JUPYTER_PASSWORD:-}" \
   --ServerApp.password="" &
 
 echo "Cloning branch '$BRANCH' from $REPO_URL..."
@@ -26,5 +26,10 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 chmod +x /runner/repo/train.sh
 
-echo "Handing off execution to: $@"
-exec "$@"
+if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
+    echo "Defaulting execution to repository training script..."
+    exec bash ./train.sh
+else
+    echo "Handing off execution to: $@"
+    exec "$@"
+fi
