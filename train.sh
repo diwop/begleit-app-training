@@ -30,6 +30,7 @@ set +e
 # -u enforces unbuffered output by python
 python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
+TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
@@ -42,12 +43,10 @@ if [ -n "${S3_BUCKET:-}" ]; then
         echo "=== S3 Copy Successful! ==="
     else
         echo "=== WARNING: S3 Copy Failed! ==="
-        sleep infinity # Keep the pod alive for manual inspection
+        sleep 60 # Keep the pod alive for log download
     fi
 fi
 
-
-TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 set -e
 
 # Handle lifecycle, S3 sync & (optional) RunPod shutdown
@@ -68,7 +67,7 @@ if [ $TRAIN_EXIT_CODE -eq 0 ]; then
             echo "=== S3 Sync Successful! ==="
         else
             echo "=== WARNING: S3 Sync Failed! ==="
-            sleep infinity # Keep the pod alive for manual inspection
+            sleep 60 # Keep the pod alive for log download
         fi
     else
         echo "S3_BUCKET environment variable is not set. Skipping S3 sync."
@@ -76,6 +75,7 @@ if [ $TRAIN_EXIT_CODE -eq 0 ]; then
 
 else
     echo "[FATAL] Training failed with exit code $TRAIN_EXIT_CODE."
+    sleep 60 # Keep the pod alive for log download
 fi
 
 if [ -n "$RUNPOD_POD_ID" ]; then
