@@ -68,11 +68,26 @@ def main():
 
     TOKENIZER_NAME = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
     print(f"Loading tokenizer from {TOKENIZER_NAME}...")
+    FALLBACK_TOKENIZER = "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit"
+    tokenizer = None
     try:
         tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, local_files_only=True)
-    except Exception:
-        print("Tokenizer not found in local cache. Fetching from Hugging Face Hub (this may take a moment)...")
-        tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+    except Exception as e:
+        if "TokenizersBackend" in str(e):
+            print(f"Warning: Tokenizer class incompatible ({e}). Falling back to {FALLBACK_TOKENIZER}...")
+        else:
+            print("Tokenizer not found in local cache. Fetching from Hugging Face Hub (this may take a moment)...")
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+            except Exception as remote_err:
+                print(f"Warning: Failed to load tokenizer {TOKENIZER_NAME} due to: {remote_err}. Falling back to {FALLBACK_TOKENIZER}...")
+                
+    if tokenizer is None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(FALLBACK_TOKENIZER)
+        except Exception as fallback_err:
+            print(f"ERROR: Failed to load fallback tokenizer {FALLBACK_TOKENIZER}: {fallback_err}")
+            sys.exit(1)
 
     # 4. Scan the src-data directory using regex to capture the exact ID string
     pattern = re.compile(r"^(\d+)_(Standardsprache|Leichte_Sprache)\.(md|txt)$")
