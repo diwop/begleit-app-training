@@ -33,10 +33,36 @@ python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 set -e
 
-# Handle lifecycle & (optional) RunPod shutdown
+# Handle lifecycle, S3 sync & (optional) RunPod shutdown
 
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Training completed successfully!"
+
+    # Check if S3_BUCKET is set and not empty
+    if [ -n "${S3_BUCKET:-}" ]; then
+        echo "S3_BUCKET is set to '${S3_BUCKET}'. Preparing to sync artifacts..."
+        
+        # Install AWS CLI using uv
+        uv pip install --system awscli
+        
+        # Define your target S3 path dynamically
+        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+        S3_TARGET="s3://${S3_BUCKET}/run_${TIMESTAMP}"
+        
+        # Sync the entire output directory
+        echo "Uploading /workspace/output to ${S3_TARGET}..."
+        aws s3 sync /workspace/output "${S3_TARGET}"
+        
+        if [ $? -eq 0 ]; then
+            echo "=== S3 Sync Successful! ==="
+        else
+            echo "=== WARNING: S3 Sync Failed! ==="
+            sleep infinity # Keep the pod alive for manual inspection
+        fi
+    else
+        echo "S3_BUCKET environment variable is not set. Skipping S3 sync."
+    fi
+
 else
     echo "[FATAL] Training failed with exit code $TRAIN_EXIT_CODE."
 fi
