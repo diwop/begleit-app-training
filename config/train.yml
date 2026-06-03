@@ -16,7 +16,7 @@ weight_decay: 0.0
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template
-    chat_template_jinja: "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'user' %}{{ '[INST] ' + message['content'] + ' [/INST]' }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}{% endif %}{% endfor %}"
+    chat_template_jinja: "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'user' %}{{ '[INST] ' + message['content'] + ' [/INST] ' }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}{% endif %}{% endfor %}"
     field_messages: messages
     message_property_mappings:
       role: role

@@ -78,7 +78,10 @@ else
     sleep 60 # Keep the pod alive for log download
 fi
 
-if [ -n "$RUNPOD_POD_ID" ]; then
+if [ "${KEEP_ALIVE:-false}" = "true" ]; then
+    echo "KEEP_ALIVE flag is active. Bypassing RunPod shutdown API."
+    echo "Pipeline complete. Returning control to terminal."
+elif [ -n "$RUNPOD_POD_ID" ]; then
     echo "RunPod environment detected. Shutting down pod to save costs..."
     curl -s --request POST "https://api.runpod.io/graphql" \
     --header "Authorization: Bearer $RUNPOD_API_KEY" \
