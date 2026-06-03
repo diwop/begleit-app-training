@@ -9,7 +9,7 @@ dependencies = [
     "datasets>=2.16.0",
     "omegaconf>=2.3.0",
     "pytest>=8.0.0",
-    "transformers<4.48",
+    "transformers<5.10",
     "dvc[s3]>=3.50.0",
     "numpy<2.2",
     "setuptools<80",
