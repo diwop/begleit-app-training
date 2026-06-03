@@ -59,6 +59,10 @@ def test_single_gpu_low_vram(mock_cuda, mock_subprocess):
 
     eval_cmd = mock_subprocess.call_args_list[1][0][0]
     assert "src/evaluation.py" in eval_cmd
+    assert eval_cmd[eval_cmd.index("--adapter_path") + 1] == "/app/output/adapter"
+    assert eval_cmd[eval_cmd.index("--seq_length") + 1] == "12288"
+    assert eval_cmd[eval_cmd.index("--lora_rank") + 1] == "32"
+    assert eval_cmd[eval_cmd.index("--output_file") + 1] == "/app/output/adapter/evaluation_results.md"
 
 def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     mock_cuda.is_available.return_value = True
@@ -83,6 +87,10 @@ def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
 
     eval_cmd = mock_subprocess.call_args_list[1][0][0]
     assert "src/evaluation.py" in eval_cmd
+    assert eval_cmd[eval_cmd.index("--adapter_path") + 1] == "/app/output/adapter"
+    assert eval_cmd[eval_cmd.index("--seq_length") + 1] == "12288"
+    assert eval_cmd[eval_cmd.index("--lora_rank") + 1] == "32"
+    assert eval_cmd[eval_cmd.index("--output_file") + 1] == "/app/output/adapter/evaluation_results.md"
 
 
 # Define the files and their expected base_model outcomes
