@@ -3,7 +3,7 @@ name = "axolotl-moe-pipeline"
 version = "0.1.0"
 description = "Axolotl MoE fine-tuning pipeline"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.12"
 dependencies = [
     "clearml>=2.1.7",
     "datasets>=2.16.0",
