@@ -11,7 +11,7 @@ dependencies = [
     "pytest>=8.0.0",
     "transformers<4.48",
     "dvc[s3]>=3.50.0",
-    "numpy<2.2",
+    "numpy<2.3",
     "setuptools<80",
     "torch==2.3.1; sys_platform == 'linux'",
     "vllm>=0.5.2,<0.6.0; sys_platform == 'linux'",
