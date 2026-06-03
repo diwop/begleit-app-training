@@ -81,21 +81,27 @@ def main():
     # Run Evaluation
     print("\nStarting post-training evaluation...")
     
-    # Ensure the target directory exists just in case
-    os.makedirs("/app/output/adapter", exist_ok=True)
+    # Extract values with safe fallbacks
+    output_dir = str(merged_cfg.get("output_dir", "/workspace/output"))
+    seq_len = str(merged_cfg.get("sequence_len", 2048))
+    lora_rank = str(merged_cfg.get("lora_r", 64))
+    
+    os.makedirs(output_dir, exist_ok=True)
 
     eval_cmd = [
         "python", "src/evaluation.py",
         "--base_model", str(merged_cfg.base_model),
-        "--adapter_path", "/app/output/adapter",
+        "--adapter_path", output_dir,
         "--dataset_path", str(merged_cfg.datasets[0].path),
-        "--output_file", "/app/output/adapter/evaluation_results.jsonl"
+        "--seq_length", seq_len,
+        "--lora_rank", lora_rank,
+        "--output_file", f"{output_dir}/evaluation_results.md"
     ]
 
     print(f"Executing Evaluation: {' '.join(eval_cmd)}\n")
     try:
         subprocess.run(eval_cmd, check=True)
-        print("\n[Success] Pipeline finished! Results saved to /app/output/adapter/evaluation_results.jsonl")
+        print(f"\n[Success] Pipeline finished! Results saved to {output_dir}/evaluation_results.md")
     except subprocess.CalledProcessError as e:
         print(f"\n[ERROR] Evaluation failed with exit code {e.returncode}")
         sys.exit(1)        
