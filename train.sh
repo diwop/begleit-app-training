@@ -30,6 +30,23 @@ set +e
 # -u enforces unbuffered output by python
 python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
+
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+if [ -n "${S3_BUCKET:-}" ]; then
+    echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
+    # Install AWS CLI using uv
+    uv pip install --system awscli
+    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${TIMESTAMP}_training_run.log"
+
+    if [ $? -eq 0 ]; then
+        echo "=== S3 Copy Successful! ==="
+    else
+        echo "=== WARNING: S3 Copy Failed! ==="
+        sleep infinity # Keep the pod alive for manual inspection
+    fi
+fi
+
+
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 set -e
 
@@ -38,15 +55,9 @@ set -e
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Training completed successfully!"
 
-    # Check if S3_BUCKET is set and not empty
     if [ -n "${S3_BUCKET:-}" ]; then
         echo "S3_BUCKET is set to '${S3_BUCKET}'. Preparing to sync artifacts..."
         
-        # Install AWS CLI using uv
-        uv pip install --system awscli
-        
-        # Define your target S3 path dynamically
-        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
         S3_TARGET="s3://${S3_BUCKET}/run_${TIMESTAMP}"
         
         # Sync the entire output directory
