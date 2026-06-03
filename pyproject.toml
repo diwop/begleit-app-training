@@ -3,7 +3,7 @@ name = "axolotl-moe-pipeline"
 version = "0.1.0"
 description = "Axolotl MoE fine-tuning pipeline"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "clearml>=2.1.7",
     "datasets>=2.16.0",
@@ -15,6 +15,7 @@ dependencies = [
     "setuptools<80",
     "torch==2.3.1; sys_platform == 'linux'",
     "vllm>=0.5.2,<0.6.0; sys_platform == 'linux'",
+    "protobuf>=3.20.3,<4.26.0",
 ]
 
 [build-system]
