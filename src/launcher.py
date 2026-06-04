@@ -22,10 +22,6 @@ def main():
     # Apply the memory fragmentation fix globally inside the script
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    # Increase HF verbosity
-    os.environ["HF_HUB_VERBOSITY"] = "debug"
-    os.environ["TRANSFORMERS_VERBOSITY"] = "info"
-
     # Detect the GPUs and their VRAM
     if not torch.cuda.is_available():
         print("ERROR: No CUDA GPUs detected!")
