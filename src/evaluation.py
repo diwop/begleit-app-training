@@ -4,11 +4,12 @@ import gc
 import torch
 import textstat
 from pathlib import Path
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
+from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
+from vllm.lora.request import LoRARequest
 
-# Hardcoded Challenger Variables
-CHALLENGER_BASE = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+# Hardcoded Challenger Variables (Swapped to AWQ for vLLM compatibility)
+CHALLENGER_BASE = "casperhansen/llama-3.1-8b-instruct-awq"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
 
 def format_metric(value: float) -> str:
@@ -24,35 +25,10 @@ def get_metrics_str(text: str) -> str:
     wstf = textstat.wiener_sachtextformel(text, 1)
     return f"(FRE {format_metric(fre)}, WSTF1 {format_metric(wstf)})"
 
-def generate_response(model, tokenizer, messages, max_new_tokens=4096):
-    """Helper function to format, tokenize, and generate text safely."""
-    # Format prompt using the model's native chat template
-    prompt = tokenizer.apply_chat_template(
-        messages, 
-        tokenize=False, 
-        add_generation_prompt=True
-    )
-    
-    # dynamically send inputs to the exact GPU where the model starts
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device) 
-    
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id
-        )
-        
-    # Strip the input tokens to isolate just the new generated text
-    input_length = inputs["input_ids"].shape[1]
-    generated_tokens = outputs[0][input_length:]
-    return tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models.")
-    parser.add_argument("--base_model", type=str, required=True, help="Path or HF ID of the base model")
+    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models using vLLM.")
+    parser.add_argument("--base_model", type=str, required=True, help="Path or HF ID of the AWQ base model")
     parser.add_argument("--adapter_path", type=str, required=True, help="Path to the trained LoRA adapter")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the evaluation JSONL dataset")
     parser.add_argument("--seq_length", type=int, default=16384, help="Context sequence length threshold")
@@ -101,54 +77,83 @@ def main():
             "input_messages": input_messages
         })
 
-    # STAGE 1: BASELINE
-    print(f"\n--- STAGE 1: Loading Baseline ({args.base_model}) ---")
+    # Common Generation Config
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=4096)
+
+    # ========================================================
+    # STAGE 1 & 2: BASELINE & TUNED ADAPTER (Shared Base Model)
+    # ========================================================
+    print(f"\n--- INITIALIZING vLLM: Loading AWQ Base Model ({args.base_model}) with LoRA Enabled ---")
+    
+    # Load base tokenizer to format prompts natively via chat template
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model, 
-        device_map="auto", 
-        torch_dtype=torch.bfloat16
+    formatted_prompts = [
+        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
+        for data in evaluation_data
+    ]
+
+    # Spin up the vLLM Engine
+    llm = LLM(
+        model=args.base_model,
+        quantization="awq",
+        enable_lora=True,
+        max_model_len=args.seq_length,
+        max_loras=1,
+        max_lora_rank=args.lora_rank
     )
 
-    baseline_results = []
-    for i, data in enumerate(evaluation_data):
-        print(f"Generating Baseline {i+1}/{len(evaluation_data)}...")
-        baseline_results.append(generate_response(model, tokenizer, data["input_messages"]))
+    # Batch Generate Stage 1 (Baseline)
+    print(f"\n🚀 Executing batched generation for Baseline ({len(formatted_prompts)} samples)...")
+    baseline_outputs = llm.generate(formatted_prompts, sampling_params)
+    baseline_results = [output.outputs[0].text.strip() for output in baseline_outputs]
 
-    # STAGE 2: TUNED
-    print(f"\n--- STAGE 2: Loading Tuned Adapter ({args.adapter_path}) ---")
-    model = PeftModel.from_pretrained(model, args.adapter_path)
-    
-    tuned_results = []
-    for i, data in enumerate(evaluation_data):
-        print(f"Generating Tuned {i+1}/{len(evaluation_data)}...")
-        tuned_results.append(generate_response(model, tokenizer, data["input_messages"]))
+    # Batch Generate Stage 2 (Tuned Adapter via dynamic LoRARequest)
+    print(f"\n🚀 Executing batched generation for Tuned Adapter using dynamic mapping...")
+    tuned_outputs = llm.generate(
+        formatted_prompts, 
+        sampling_params,
+        lora_request=LoRARequest("tuned_adapter", 1, args.adapter_path)
+    )
+    tuned_results = [output.outputs[0].text.strip() for output in tuned_outputs]
 
     # VRAM WIPE
-    print("\n[Wiping VRAM for Challenger Model...]")
-    del model
+    print("\n[Wiping vLLM Engine Memory for Challenger Model...]")
+    del llm
     del tokenizer
     gc.collect()
     torch.cuda.empty_cache()
 
+    # ========================================================
     # STAGE 3: CHALLENGER MODEL
-    print(f"\n--- STAGE 3: Loading Challenger ({CHALLENGER_BASE} + {CHALLENGER_ADAPTER}) ---")
-    tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
-    model = AutoModelForCausalLM.from_pretrained(
-        CHALLENGER_BASE, 
-        device_map="auto", 
-        torch_dtype=torch.bfloat16
-    )
-    model = PeftModel.from_pretrained(model, CHALLENGER_ADAPTER)
+    # ========================================================
+    print(f"\n--- INITIALIZING vLLM: Loading Challenger AWQ Base ({CHALLENGER_BASE}) ---")
+    
+    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
+    chal_formatted_prompts = [
+        chal_tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
+        for data in evaluation_data
+    ]
 
-    challenger_results = []
-    for i, data in enumerate(evaluation_data):
-        print(f"Generating Challenger {i+1}/{len(evaluation_data)}...")
-        challenger_results.append(generate_response(model, tokenizer, data["input_messages"]))
+    llm_challenger = LLM(
+        model=CHALLENGER_BASE,
+        quantization="awq",
+        enable_lora=True,
+        max_model_len=args.seq_length,
+        max_loras=1,
+        max_lora_rank=args.lora_rank
+    )
+
+    print(f"\n🚀 Executing batched generation for Challenger ({len(chal_formatted_prompts)} samples)...")
+    challenger_outputs = llm_challenger.generate(
+        chal_formatted_prompts,
+        sampling_params,
+        lora_request=LoRARequest("challenger_adapter", 2, CHALLENGER_ADAPTER)
+    )
+    challenger_results = [output.outputs[0].text.strip() for output in challenger_outputs]
 
     # Final Cleanup
-    del model
-    del tokenizer
+    del llm_challenger
+    del chal_tokenizer
     gc.collect()
     torch.cuda.empty_cache()
 
