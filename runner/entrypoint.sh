@@ -25,7 +25,9 @@ rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 chmod +x /runner/repo/train.sh
+chmod +x /runner/repo/eval.sh
 
+# Prevent loop of death
 if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
     echo "Defaulting execution to repository training script..."
     exec bash ./train.sh

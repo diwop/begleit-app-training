@@ -44,51 +44,61 @@ def main():
     temp_config_path = ".merged-train.yml"
     OmegaConf.save(config=merged_cfg, f=temp_config_path)
 
-    # Construct the base command for the training
-    cmd = [
-        "accelerate", "launch",
-        "--num_processes", str(num_gpus),
-        "-m", "axolotl.cli.train",
-        ".merged-train.yml"
-    ]
-
-    # Add overrides based on VRAM
-    if vram_gb < 30:
-        print("[Override] <30GB VRAM detected. Injecting safety limits...")
-        cmd.extend([
-            "--micro_batch_size", "1",
-            "--gradient_accumulation_steps", "8"
-        ])
-    else:
-        print("[Override] >30GB VRAM detected. Optimizing for high-throughput...")
-        cmd.extend([
-            "--micro_batch_size", "4",
-            "--gradient_accumulation_steps", "2"
-        ])
-
-    # Add DeepSpeed toggle based on GPU count
-    if num_gpus > 1:
-        print("[Override] Multiple GPUs detected. Injecting DeepSpeed ZeRO-3...")
-        cmd.extend(["--deepspeed", "config/zero3.json"])
-    else:
-        print("[Override] Single GPU detected. Running native PyTorch (No DeepSpeed).")
-
-    # Execute Training
-    print(f"\nExecuting: {' '.join(cmd)}\n")
-    try:
-        subprocess.run(cmd, check=True)
-        print("\n[Success] Training completed successfully!")
-    except subprocess.CalledProcessError as e:
-        print(f"\n[FATAL ERROR] Training failed with exit code {e.returncode}")
-        sys.exit(1)
-
-    # Run Evaluation
-    print("\nStarting post-training evaluation...")
-    
-    # Extract values with safe fallbacks
+    # Extract configuration variables early to use in our skip logic
     output_dir = str(merged_cfg.get("output_dir", "/workspace/output"))
     seq_len = str(merged_cfg.get("sequence_len", 2048))
     lora_rank = str(merged_cfg.get("lora_r", 64))
+
+    # --- CONDITIONAL TRAINING LOGIC ---
+    is_eval_mode = os.environ.get("EVAL", "false").lower() == "true"
+    adapter_exists = os.path.exists(os.path.join(output_dir, "adapter_config.json"))
+
+    if is_eval_mode and adapter_exists:
+        print(f"\n[SKIP] EVAL=true detected and adapter found at '{output_dir}'. Bypassing training phase.")
+    else:
+        if is_eval_mode and not adapter_exists:
+            print(f"\n[WARNING] EVAL=true is set, but no valid adapter was found at '{output_dir}'. Proceeding with training!")
+
+        # Construct the base command for the training
+        cmd = [
+            "accelerate", "launch",
+            "--num_processes", str(num_gpus),
+            "-m", "axolotl.cli.train",
+            ".merged-train.yml"
+        ]
+
+        # Add overrides based on VRAM
+        if vram_gb < 30:
+            print("[Override] <30GB VRAM detected. Injecting safety limits...")
+            cmd.extend([
+                "--micro_batch_size", "1",
+                "--gradient_accumulation_steps", "8"
+            ])
+        else:
+            print("[Override] >30GB VRAM detected. Optimizing for high-throughput...")
+            cmd.extend([
+                "--micro_batch_size", "4",
+                "--gradient_accumulation_steps", "2"
+            ])
+
+        # Add DeepSpeed toggle based on GPU count
+        if num_gpus > 1:
+            print("[Override] Multiple GPUs detected. Injecting DeepSpeed ZeRO-3...")
+            cmd.extend(["--deepspeed", "config/zero3.json"])
+        else:
+            print("[Override] Single GPU detected. Running native PyTorch (No DeepSpeed).")
+
+        # Execute Training
+        print(f"\nExecuting: {' '.join(cmd)}\n")
+        try:
+            subprocess.run(cmd, check=True)
+            print("\n[Success] Training completed successfully!")
+        except subprocess.CalledProcessError as e:
+            print(f"\n[FATAL ERROR] Training failed with exit code {e.returncode}")
+            sys.exit(1)
+
+    # --- EVALUATION LOGIC ---
+    print("\nStarting post-training evaluation...")
     
     os.makedirs(output_dir, exist_ok=True)
 

@@ -1,150 +1,190 @@
 import argparse
 import json
+import gc
+import torch
 from pathlib import Path
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
+
+# Hardcoded Challenger Variables
+CHALLENGER_BASE = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
+
+def generate_response(model, tokenizer, messages, max_new_tokens=4096):
+    """Helper function to format, tokenize, and generate text safely."""
+    # Format prompt using the model's native chat template
+    prompt = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+    )
+    
+    # dynamically send inputs to the exact GPU where the model starts
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device) 
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
+        
+    # Strip the input tokens to isolate just the new generated text
+    input_length = inputs["input_ids"].shape[1]
+    generated_tokens = outputs[0][input_length:]
+    return tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate a dataset using vLLM with batching and Multi-LoRA support.")
+    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models.")
     parser.add_argument("--base_model", type=str, required=True, help="Path or HF ID of the base model")
     parser.add_argument("--adapter_path", type=str, required=True, help="Path to the trained LoRA adapter")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the evaluation JSONL dataset")
-    parser.add_argument("--seq_length", type=int, default=2048, help="Context sequence length threshold")
-    parser.add_argument("--lora_rank", type=int, default=64, help="Maximum LoRA rank for vLLM")
+    parser.add_argument("--seq_length", type=int, default=16384, help="Context sequence length threshold")
+    parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank (kept for CLI compatibility)")
     parser.add_argument("--output_file", type=str, required=True, help="Path to the output Markdown file")
     args = parser.parse_args()
 
-    # Load the JSONL dataset
-    print(f"Loading dataset from {args.dataset_path}...")
+    # Hardware Check
+    num_gpus = torch.cuda.device_count()
+    print(f"\n[Hardware Check] Detected {num_gpus} GPU(s).")
+    for i in range(num_gpus):
+        vram = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+        print(f" - GPU {i}: {torch.cuda.get_device_name(i)} ({vram:.1f} GB VRAM)")
+
+    # 1. Load the JSONL dataset and slice
+    print(f"\nLoading dataset from {args.dataset_path}...")
     with open(args.dataset_path, "r", encoding="utf-8") as f:
         dataset = [json.loads(line) for line in f if line.strip()]
     
-    # Slice the dataset to the first 20 samples to save time
     dataset = dataset[:20]
 
-    # Chat Templates & Token Limits
-    print(f"Loading tokenizer from {args.base_model}...")
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
-
-    prompts = []
-    reference_solutions = []
-    categories = []
-    original_prompts = []
-
+    # Pre-process evaluation data
+    evaluation_data = []
     for entry in dataset:
         messages = entry.get("messages", [])
-        
-        # Save assistant content as reference solution, then remove it
-        reference_solution = ""
-        user_content = ""
+        reference_sol = ""
         input_messages = []
+        original_prompt = ""
+        
         for msg in messages:
             if msg.get("role") == "assistant":
-                reference_solution = msg.get("content", "")
+                reference_sol = msg.get("content", "")
             else:
                 input_messages.append(msg)
                 if msg.get("role") == "user":
-                    user_content = msg.get("content", "")
+                    original_prompt = msg.get("content", "")
                     
-        reference_solutions.append(reference_solution)
-        original_prompts.append(user_content)
+        evaluation_data.append({
+            "prompt": original_prompt,
+            "reference": reference_sol,
+            "input_messages": input_messages
+        })
 
-        # Apply chat template
-        prompt = tokenizer.apply_chat_template(
-            input_messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        prompts.append(prompt)
-
-        # Measure token length of this generated prompt
-        tokenized_prompt = tokenizer(prompt)
-        prompt_len = len(tokenized_prompt.input_ids)
-
-        if prompt_len > args.seq_length:
-            category = "Unseen (Oversized)"
-        else:
-            category = "Train/Test (Fits Context)"
-        categories.append(category)
-
-    # Calculate max model length dynamically
-    max_prompt_len = max(len(tokenizer(p).input_ids) for p in prompts)
-    max_model_len = max_prompt_len + 4096
-    print(f"Max prompt token length: {max_prompt_len}")
-    print(f"Dynamically setting max_model_len to {max_model_len}")
-
-    # Initialize vLLM
-    print("Initializing vLLM model engine...")
-    from vllm import LLM, SamplingParams
-    from vllm.lora.request import LoRARequest
-
-    llm = LLM(
-        model=args.base_model,
-        enable_lora=True,
-        max_lora_rank=args.lora_rank,
-        max_model_len=max_model_len,
-        trust_remote_code=True
+    # ==========================================
+    # STAGE 1: MIXTRAL BASELINE
+    # ==========================================
+    print(f"\n--- STAGE 1: Loading Baseline ({args.base_model}) ---")
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base_model, 
+        device_map="auto", 
+        torch_dtype=torch.bfloat16
     )
 
-    sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=4096
+    baseline_results = []
+    for i, data in enumerate(evaluation_data):
+        print(f"Generating Baseline {i+1}/{len(evaluation_data)}...")
+        baseline_results.append(generate_response(model, tokenizer, data["input_messages"]))
+
+    # ==========================================
+    # STAGE 2: MIXTRAL TUNED (YOUR LORA)
+    # ==========================================
+    print(f"\n--- STAGE 2: Loading Tuned Adapter ({args.adapter_path}) ---")
+    model = PeftModel.from_pretrained(model, args.adapter_path)
+    
+    tuned_results = []
+    for i, data in enumerate(evaluation_data):
+        print(f"Generating Tuned {i+1}/{len(evaluation_data)}...")
+        tuned_results.append(generate_response(model, tokenizer, data["input_messages"]))
+
+    # ==========================================
+    # VRAM WIPE
+    # ==========================================
+    print("\n[Wiping VRAM for Challenger Model...]")
+    del model
+    del tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # ==========================================
+    # STAGE 3: CHALLENGER MODEL
+    # ==========================================
+    print(f"\n--- STAGE 3: Loading Challenger ({CHALLENGER_BASE} + {CHALLENGER_ADAPTER}) ---")
+    tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
+    model = AutoModelForCausalLM.from_pretrained(
+        CHALLENGER_BASE, 
+        device_map="auto", 
+        torch_dtype=torch.bfloat16
     )
+    model = PeftModel.from_pretrained(model, CHALLENGER_ADAPTER)
 
-    # 5. Generate Batches
-    print("Generating baseline (Base Model) outputs...")
-    baseline_outputs = llm.generate(prompts, sampling_params)
-    baseline_results = [out.outputs[0].text for out in baseline_outputs]
+    challenger_results = []
+    for i, data in enumerate(evaluation_data):
+        print(f"Generating Challenger {i+1}/{len(evaluation_data)}...")
+        challenger_results.append(generate_response(model, tokenizer, data["input_messages"]))
 
-    print("Generating tuned (Model + Adapter) outputs...")
-    tuned_outputs = llm.generate(
-        prompts,
-        sampling_params,
-        lora_request=LoRARequest("adapter", 1, args.adapter_path)
-    )
-    tuned_results = [out.outputs[0].text for out in tuned_outputs]
+    # Final Cleanup
+    del model
+    del tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
 
-    # 6. Markdown Report
-    print(f"Writing Markdown report to {args.output_file}...")
+    # ==========================================
+    # OUTPUT MARKDOWN REPORT
+    # ==========================================
+    print(f"\nWriting Markdown report to {args.output_file}...")
     report_lines = []
-    for i in range(len(dataset)):
-        entry_idx = i + 1
-        category = categories[i]
-        original_prompt = original_prompts[i]
-        reference_sol = reference_solutions[i]
-        baseline_res = baseline_results[i]
-        tuned_res = tuned_results[i]
-
-        entry_md = f"""## Entry {entry_idx} | Split: {category}
+    
+    for i in range(len(evaluation_data)):
+        data = evaluation_data[i]
+        entry_md = f"""## Entry {i + 1}
 
 ### Prompt
 ```text
-{original_prompt}
+{data['prompt']}
 ```
 
 ### Reference Solution
 ```text
-{reference_sol}
+{data['reference']}
 ```
 
-### Baseline Result
+### Baseline ({args.base_model})
 ```text
-{baseline_res}
+{baseline_results[i]}
 ```
 
-### Tuned Result
+### Tuned ({args.base_model} with adapter)
 ```text
-{tuned_res}
+{tuned_results[i]}
 ```
----
+
+### Challenger ({CHALLENGER_BASE} with {CHALLENGER_ADAPTER})
+```text
+{challenger_results[i]}
+```
 """
-        report_lines.append(entry_md)
+
+    report_lines.append(entry_md)
 
     output_path = Path(args.output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(report_lines))
 
-    print("Evaluation pipeline successfully completed!")
+    print("=== Evaluation pipeline successfully completed! ===")
 
 if __name__ == "__main__":
     main()
