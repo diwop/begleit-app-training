@@ -1,2 +1,5 @@
-base_model: cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit
-# Note: load_in_4bit is omitted because AWQ models are already explicitly formatted in 4-bit
+inference_model: cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit # custom field, removed before training
+
+base_model: unsloth/Mistral-Small-4-119B-2603
+unsloth: true
+load_in_4bit: true

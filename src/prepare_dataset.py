@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from transformers import AutoTokenizer
+import textstat
 
 def read_file(path: Path) -> str:
     """Helper to read file contents cleanly."""
@@ -45,6 +46,10 @@ def main():
 
     # Ensure output directory exists
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Configure Textstat for German
+    textstat.set_lang("de")
+    print("Configured textstat for German readability metrics.")
 
     # 2. Extract sequence length from base.yml using regex
     try:
@@ -162,8 +167,21 @@ def main():
                 print(f"[WARNING] Pair {idx} is {token_count} tokens (Exceeds {MAX_LEN} limit)")
                 exceeded_count += 1
 
+            # Calculate Readability Metrics
+            metrics = {
+                "original_fre": round(textstat.flesch_reading_ease(standard_text), 2),
+                "original_wstf": round(textstat.wiener_sachtextformel(standard_text, 1), 2),
+                "reference_fre": round(textstat.flesch_reading_ease(leichte_text), 2),
+                "reference_wstf": round(textstat.wiener_sachtextformel(leichte_text, 1), 2)
+            }
+
             # Construct the line payload
-            entry = {"id": idx, "messages": messages}
+            entry = {
+                "id": idx, 
+                "messages": messages, 
+                "original_text": standard_text,
+                "metrics": metrics
+            }
 
             # Write single JSON line
             f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -198,12 +216,8 @@ def main():
     print(f"   Avg : {avg_assistant_tokens}")
     print("=" * 60 + "\n")
 
-    # 7. Fail the pipeline if necessary
     if exceeded_count > 0:
         print(f"[FATAL ERROR] {exceeded_count} sample(s) exceeded the sequence length limit!")
-        print(f"Note: You can extend 'sequence_len' in config/base.yml to accommodate this data.")
-        print(f"HOWEVER, expanding the sequence length will require more GPU VRAM during training.")
-        print(f"You may need to upgrade your hardware tier or reduce your micro_batch_size to compensate.")
         sys.exit(1)
 
     print(f"Successfully generated clean, validated dataset at: {output_file}")

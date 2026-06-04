@@ -2,6 +2,7 @@ import argparse
 import json
 import gc
 import torch
+import textstat
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
@@ -9,6 +10,19 @@ from peft import PeftModel
 # Hardcoded Challenger Variables
 CHALLENGER_BASE = "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
+
+def format_metric(value: float) -> str:
+    """Formats a float to 1 optional decimal place (e.g., 4.0 -> 4, 4.5 -> 4.5)"""
+    formatted = f"{value:.1f}"
+    return formatted.rstrip('0').rstrip('.') if '.' in formatted else formatted
+
+def get_metrics_str(text: str) -> str:
+    """Calculates German textstat metrics and formats the header string."""
+    if not text.strip():
+        return "(FRE N/A, WSTF1 N/A)"
+    fre = textstat.flesch_reading_ease(text)
+    wstf = textstat.wiener_sachtextformel(text, 1)
+    return f"(FRE {format_metric(fre)}, WSTF1 {format_metric(wstf)})"
 
 def generate_response(model, tokenizer, messages, max_new_tokens=4096):
     """Helper function to format, tokenize, and generate text safely."""
@@ -46,6 +60,9 @@ def main():
     parser.add_argument("--output_file", type=str, required=True, help="Path to the output Markdown file")
     args = parser.parse_args()
 
+    # Configure Textstat for German
+    textstat.set_lang("de")
+
     # Hardware Check
     num_gpus = torch.cuda.device_count()
     print(f"\n[Hardware Check] Detected {num_gpus} GPU(s).")
@@ -75,16 +92,16 @@ def main():
                 input_messages.append(msg)
                 if msg.get("role") == "user":
                     original_prompt = msg.get("content", "")
+
+        original_text = entry.get("original_text", original_prompt)            
                     
         evaluation_data.append({
-            "prompt": original_prompt,
+            "original": original_text,
             "reference": reference_sol,
             "input_messages": input_messages
         })
 
-    # ==========================================
-    # STAGE 1: MIXTRAL BASELINE
-    # ==========================================
+    # STAGE 1: BASELINE
     print(f"\n--- STAGE 1: Loading Baseline ({args.base_model}) ---")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     model = AutoModelForCausalLM.from_pretrained(
@@ -98,9 +115,7 @@ def main():
         print(f"Generating Baseline {i+1}/{len(evaluation_data)}...")
         baseline_results.append(generate_response(model, tokenizer, data["input_messages"]))
 
-    # ==========================================
-    # STAGE 2: MIXTRAL TUNED (YOUR LORA)
-    # ==========================================
+    # STAGE 2: TUNED
     print(f"\n--- STAGE 2: Loading Tuned Adapter ({args.adapter_path}) ---")
     model = PeftModel.from_pretrained(model, args.adapter_path)
     
@@ -109,18 +124,14 @@ def main():
         print(f"Generating Tuned {i+1}/{len(evaluation_data)}...")
         tuned_results.append(generate_response(model, tokenizer, data["input_messages"]))
 
-    # ==========================================
     # VRAM WIPE
-    # ==========================================
     print("\n[Wiping VRAM for Challenger Model...]")
     del model
     del tokenizer
     gc.collect()
     torch.cuda.empty_cache()
 
-    # ==========================================
     # STAGE 3: CHALLENGER MODEL
-    # ==========================================
     print(f"\n--- STAGE 3: Loading Challenger ({CHALLENGER_BASE} + {CHALLENGER_ADAPTER}) ---")
     tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
     model = AutoModelForCausalLM.from_pretrained(
@@ -149,29 +160,43 @@ def main():
     
     for i in range(len(evaluation_data)):
         data = evaluation_data[i]
+        
+        orig_text = data['original']
+        ref_text = data['reference']
+        base_text = baseline_results[i]
+        tuned_text = tuned_results[i]
+        chal_text = challenger_results[i]
+        
+        # Calculate dynamic metrics for the headers
+        m_orig = get_metrics_str(orig_text)
+        m_ref = get_metrics_str(ref_text)
+        m_base = get_metrics_str(base_text)
+        m_tuned = get_metrics_str(tuned_text)
+        m_chal = get_metrics_str(chal_text)
+
         entry_md = f"""## Entry {i + 1}
 
-### Prompt
+### Original (*{m_orig}*)
 ```text
-{data['prompt']}
+{data['original']}
 ```
 
-### Reference Solution
+### Reference Solution (*{m_ref}*)
 ```text
 {data['reference']}
 ```
 
-### Baseline ({args.base_model})
+### {args.base_model} (*{m_base}*)
 ```text
 {baseline_results[i]}
 ```
 
-### Tuned ({args.base_model} with adapter)
+### fine-tuned {args.base_model} (*{m_tuned}*)
 ```text
 {tuned_results[i]}
 ```
 
-### Challenger ({CHALLENGER_BASE} with {CHALLENGER_ADAPTER})
+### {CHALLENGER_BASE} tuned with {CHALLENGER_ADAPTER} (*{m_chal}*)
 ```text
 {challenger_results[i]}
 ```
