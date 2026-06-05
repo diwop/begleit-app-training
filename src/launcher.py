@@ -1,4 +1,6 @@
 import os
+import time
+import datetime
 import torch
 import subprocess
 import argparse
@@ -35,6 +37,9 @@ def main():
 
     # Merge the selected config file with the base
     merged_cfg = merge_configs("config/base.yml", args.config)
+
+    print(f"\n[DEBUG] Found base_model: {merged_cfg.get('base_model')}")
+    print(f"[DEBUG] Found inference_model: {merged_cfg.get('inference_model')}\n")
 
     # Extract custom values
     inference_model = str(merged_cfg.get("inference_model", merged_cfg.get("base_model")))
@@ -96,6 +101,24 @@ def main():
         try:
             subprocess.run(cmd, check=True)
             print("\n[Success] Training completed successfully!")
+            
+            s3_bucket = os.environ.get("S3_BUCKET", "")
+            if s3_bucket:
+                print(f"\nS3_BUCKET '{s3_bucket}' configured. Backing up adapter and checkpoints...")
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                s3_target = f"s3://{s3_bucket}/{timestamp}_run"
+                
+                try:
+                    # Sync the entire output directory recursively
+                    print(f"Syncing local {output_dir} -> {s3_target} ...")
+                    subprocess.run(["aws", "s3", "sync", output_dir, s3_target], check=True)
+                    print("=== S3 Backup Successful! ===")
+                    
+                except subprocess.CalledProcessError as e:
+                    print(f"=== WARNING: S3 Backup Failed with exit code {e.returncode}! ===")
+                    print("Sleeping for 60 seconds to allow manual debugging before continuing...")
+                    time.sleep(60)
+
         except subprocess.CalledProcessError as e:
             print(f"\n[FATAL ERROR] Training failed with exit code {e.returncode}")
             sys.exit(1)
@@ -107,7 +130,7 @@ def main():
 
     eval_cmd = [
         "python", "src/evaluation.py",
-        "--base_model", str(merged_cfg.base_model),
+        "--base_model", inference_model,  # Restored mapping to the AWQ variable
         "--adapter_path", output_dir,
         "--dataset_path", str(merged_cfg.datasets[0].path),
         "--seq_length", seq_len,

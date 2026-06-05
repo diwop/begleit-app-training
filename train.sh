@@ -35,8 +35,6 @@ TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
     echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
-    # Install AWS CLI using uv
-    uv pip install --system awscli
     aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${TIMESTAMP}_training_run.log"
 
     if [ $? -eq 0 ]; then
@@ -53,26 +51,6 @@ set -e
 
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Training completed successfully!"
-
-    if [ -n "${S3_BUCKET:-}" ]; then
-        echo "S3_BUCKET is set to '${S3_BUCKET}'. Preparing to sync artifacts..."
-        
-        S3_TARGET="s3://${S3_BUCKET}/run_${TIMESTAMP}"
-        
-        # Sync the entire output directory
-        echo "Uploading /workspace/output to ${S3_TARGET}..."
-        aws s3 sync /workspace/output "${S3_TARGET}"
-        
-        if [ $? -eq 0 ]; then
-            echo "=== S3 Sync Successful! ==="
-        else
-            echo "=== WARNING: S3 Sync Failed! ==="
-            sleep 60 # Keep the pod alive for log download
-        fi
-    else
-        echo "S3_BUCKET environment variable is not set. Skipping S3 sync."
-    fi
-
 else
     echo "[FATAL] Training failed with exit code $TRAIN_EXIT_CODE."
     sleep 60 # Keep the pod alive for log download
