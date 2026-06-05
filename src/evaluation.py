@@ -1,9 +1,11 @@
 import argparse
 import json
 import gc
+import os
 import torch
 import textstat
 import time
+import subprocess
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -13,27 +15,21 @@ from peft import PeftModel
 CHALLENGER_BASE = "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
 
-def format_metric(value: float) -> str:
-    """Formats a float to 1 optional decimal place."""
-    formatted = f"{value:.1f}"
-    return formatted.rstrip('0').rstrip('.') if '.' in formatted else formatted
-
-def get_metrics_str(text: str) -> str:
-    """Calculates German textstat metrics and formats the header string."""
+def get_raw_metrics(text: str) -> tuple:
+    """Calculates German textstat metrics and returns rounded raw floats."""
     if not text.strip():
-        return "(FRE N/A, WSTF1 N/A)"
-    fre = textstat.flesch_reading_ease(text)
-    wstf = textstat.wiener_sachtextformel(text, 1)
-    return f"(FRE {format_metric(fre)}, WSTF1 {format_metric(wstf)})"
+        return 0.0, 0.0
+    fre = round(textstat.flesch_reading_ease(text), 1)
+    wstf = round(textstat.wiener_sachtextformel(text, 1), 1)
+    return fre, wstf
 
 def get_model_loading_kwargs(model_id: str) -> dict:
-    """Dynamically determines the correct backend loading arguments based on the model name."""
+    """Dynamically determines backend loading arguments for bnb-4bit or native BF16."""
     m_lower = model_id.lower()
     
-    # Base settings shared by all implementations on Ampere/Hopper
     base_kwargs = {
         "device_map": "auto",
-        "attn_implementation": "flash_attention_2"  # Forces high-speed math kernels
+        "attn_implementation": "flash_attention_2"
     }
     
     if "bnb" in m_lower or "4bit" in m_lower:
@@ -46,69 +42,114 @@ def get_model_loading_kwargs(model_id: str) -> dict:
         )
         base_kwargs["quantization_config"] = bnb_config
         return base_kwargs
-        
     else:
-        # Handles native BF16 models (Gemma 4, Mistral Small 4)
         print(f" -> Mapping {model_id} to native unquantized BF16 layout...")
         base_kwargs["torch_dtype"] = torch.bfloat16
         return base_kwargs
 
-def generate_batched(model, tokenizer, prompts, batch_size=8, desc="Generating"):
-    """Executes high-throughput left-padded batch generation with real-time tracking
-
-    and overall tokens-per-second profiling metrics.
-    """
-    results = []
-    total_tokens_generated = 0
-    start_time = time.time()  # Start the master clock for this stage
+def calculate_optimal_batch_size(model, current_batch_max_tokens, safety_factor=0.7) -> int:
+    """Dynamically calculates the optimal batch size based on remaining free VRAM."""
+    device = next(model.parameters()).device
+    if device.type != "cuda":
+        return 4
+        
+    free_vram, _ = torch.cuda.mem_get_info(device)
+    config = model.config
+    num_layers = config.num_hidden_layers
+    num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
+    head_dim = config.hidden_size // config.num_attention_heads
     
-    for i in tqdm(range(0, len(prompts), batch_size), desc=desc, unit="batch"):
-        batch_prompts = prompts[i : i + batch_size]
+    bytes_per_element = 2
+    kv_cache_per_seq = 2 * num_layers * num_kv_heads * head_dim * current_batch_max_tokens * bytes_per_element
+    
+    usable_vram = free_vram * safety_factor
+    optimal_batch_size = int(usable_vram // kv_cache_per_seq)
+    return max(1, min(optimal_batch_size, 32))
+
+def generate_batched(model, tokenizer, evaluation_data, formatted_prompts, desc="Generating"):
+    """Sorts evaluation data by target length to perform variable-sized 
+
+    bucket batching with dynamic, OOM-safe hardware utilization.
+    """
+    results_dict = {}
+    
+    # Sort data by reference token size to build optimal, contiguous length buckets
+    sorted_indices = sorted(
+        range(len(evaluation_data)), 
+        key=lambda idx: len(tokenizer.encode(evaluation_data[idx]["reference"])),
+        reverse=True
+    )
+    
+    pbar = tqdm(total=len(evaluation_data), desc=desc, unit="sample")
+    i = 0
+    start_time = time.time()
+    total_tokens_generated = 0
+    
+    while i < len(sorted_indices):
+        sample_idx = sorted_indices[i]
+        reference_tokens = len(tokenizer.encode(evaluation_data[sample_idx]["reference"]))
+        
+        # Allocate defensive 15% generation overhead ceiling buffer
+        max_new_tokens_needed = max(128, int(reference_tokens * 1.15))
+        
+        # Recalculate OOM boundaries on the fly for the current bucket
+        batch_size = calculate_optimal_batch_size(model, max_new_tokens_needed)
+        batch_indices = sorted_indices[i : i + batch_size]
+        batch_prompts = [formatted_prompts[idx] for idx in batch_indices]
+        
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to("cuda")
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=2048,
+                max_new_tokens=max_new_tokens_needed,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id
             )
             
         for j, out in enumerate(outputs):
-            input_len = inputs.input_ids.shape[1]
-            gen_tokens = out[input_len:]  # Isolate only the newly generated tokens
+            global_idx = batch_indices[j]
+            gen_tokens = out[inputs.input_ids.shape[1]:]
             total_tokens_generated += len(gen_tokens)
+            results_dict[global_idx] = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
             
-            results.append(tokenizer.decode(gen_tokens, skip_special_tokens=True).strip())
-            
+        pbar.update(len(batch_indices))
+        i += len(batch_indices)
+        
+    pbar.close()
     elapsed_time = time.time() - start_time
     tokens_per_sec = total_tokens_generated / elapsed_time if elapsed_time > 0 else 0
+    print(f"✨ [{desc}] Finished in {elapsed_time:.2f}s | Speed: {tokens_per_sec:.2f} tokens/sec\n")
     
-    # Print the precise MLOps metrics statement at the end of the stage
-    print(f"\n[{desc}] Finished in {elapsed_time:.2f}s | "
-          f"Generated {total_tokens_generated} tokens | "
-          f"Avg Speed: {tokens_per_sec:.2f} tokens/sec\n")
-          
-    return results
+    return [results_dict[k] for k in sorted(results_dict.keys())]
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models using HF Transformers.")
+    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models emitting structured JSON databases.")
     parser.add_argument("--base_model", type=str, required=True, help="Path or HF ID of the base model")
     parser.add_argument("--adapter_path", type=str, required=True, help="Path to the trained LoRA adapter")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the evaluation JSONL dataset")
     parser.add_argument("--seq_length", type=int, default=16384, help="Context sequence length threshold")
-    parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank (kept for CLI compatibility)")
-    parser.add_argument("--output_file", type=str, required=True, help="Path to the output Markdown file")
+    parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank")
+    parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSON file")
+    parser.add_argument("--run_id", type=str, required=True, help="ClearML/Pipeline unique run execution identifier")
     args = parser.parse_args()
 
     textstat.set_lang("de")
 
-    # Hardware Check
+    # Hardware Telemetry Check
     num_gpus = torch.cuda.device_count()
     print(f"\n[Hardware Check] Detected {num_gpus} GPU(s).")
     for i in range(num_gpus):
         vram = torch.cuda.get_device_properties(i).total_memory / (1024**3)
         print(f" - GPU {i}: {torch.cuda.get_device_name(i)} ({vram:.1f} GB VRAM)")
+
+    # Read external markdown prompt values dynamically from repository paths
+    repo_root = Path(__file__).resolve().parent.parent
+    system_file = repo_root / "data" / "system-prompt.md"
+    template_file = repo_root / "data" / "prompt-template.md"
+    
+    system_prompt = system_file.read_text(encoding="utf-8").strip() if system_file.exists() else ""
+    template_prompt = template_file.read_text(encoding="utf-8").strip() if template_file.exists() else ""
 
     print(f"\nLoading dataset from {args.dataset_path}...")
     with open(args.dataset_path, "r", encoding="utf-8") as f:
@@ -138,11 +179,12 @@ def main():
             "input_messages": input_messages
         })
 
-    # Stage 1: Baseline
-    print(f"\n--- INITIALIZING BASE MODEL CONFIGURATION ---")
-    
+    # ========================================================
+    # STAGE 1: UNTUNED BASELINE MODEL
+    # ========================================================
+    print(f"\n--- INITIALIZING CORE BASE MODEL CONFIGURATION ---")
     tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
-    tokenizer.padding_side = "left"  # Crucial for batch generation
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -153,16 +195,18 @@ def main():
 
     loading_kwargs = get_model_loading_kwargs(args.base_model)
     base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
+    
+    print(f"\n🚀 Executing native bucket batch generation for Baseline...")
+    baseline_results = generate_batched(base_model, tokenizer, evaluation_data, formatted_prompts, desc="Evaluating Baseline")
 
-    print(f"\nExecuting native batch generation for Baseline...")
-    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, desc="Evaluating Baseline")
-
-    # Stage 2: Tuned Adapter
+    # ========================================================
+    # STAGE 2: TUNED ADAPTER
+    # ========================================================
     print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
     adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
     
-    print(f"\nExecuting native batch generation for Tuned Adapter...")
-    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, desc="Evaluating Tuned Adapter")
+    print(f"\n🚀 Executing native bucket batch generation for Tuned Adapter...")
+    tuned_results = generate_batched(adapter_model, tokenizer, evaluation_data, formatted_prompts, desc="Evaluating Tuned Adapter")
 
     print("\n[Wiping Memory for Core Models...]")
     del adapter_model
@@ -171,10 +215,11 @@ def main():
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Stage 3: Challenger (Schomacker et. al.)
+    # ========================================================
+    # STAGE 3: CHALLENGER MODEL
+    # ========================================================
     print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
-    
-    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
+    chal_tokenizer = AutoTokenizer.from_pretrained("unsloth/meta-llama-3.1-8b-instruct")
     chal_tokenizer.padding_side = "left"
     if chal_tokenizer.pad_token is None:
         chal_tokenizer.pad_token = chal_tokenizer.eos_token
@@ -188,8 +233,8 @@ def main():
     chal_base = AutoModelForCausalLM.from_pretrained(CHALLENGER_BASE, **chal_loading_kwargs)
     chal_model = PeftModel.from_pretrained(chal_base, CHALLENGER_ADAPTER)
 
-    print(f"\nExecuting native batch generation for Challenger...")
-    challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, desc="Evaluating Challenger")
+    print(f"\n🚀 Executing native bucket batch generation for Challenger...")
+    challenger_results = generate_batched(chal_model, chal_tokenizer, evaluation_data, chal_formatted_prompts, desc="Evaluating Challenger")
 
     del chal_model
     del chal_base
@@ -197,9 +242,15 @@ def main():
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Output Markdown Report
-    print(f"\nWriting Markdown report to {args.output_file}...")
-    report_lines = []
+    # ==========================================
+    # OUTPUT JSON STREAM COMPILATION
+    # ==========================================
+    print(f"\nCompiling structured JSON database...")
+    json_output = {
+        "system": system_prompt,
+        "template": template_prompt,
+        "entries": []
+    }
     
     for i in range(len(evaluation_data)):
         data = evaluation_data[i]
@@ -209,48 +260,52 @@ def main():
         tuned_text = tuned_results[i]
         chal_text = challenger_results[i]
         
-        m_orig = get_metrics_str(orig_text)
-        m_ref = get_metrics_str(ref_text)
-        m_base = get_metrics_str(base_text)
-        m_tuned = get_metrics_str(tuned_text)
-        m_chal = get_metrics_str(chal_text)
+        orig_fre, orig_swtf = get_raw_metrics(orig_text)
+        ref_fre, ref_swtf = get_raw_metrics(ref_text)
+        base_fre, base_swtf = get_raw_metrics(base_text)
+        tuned_fre, tuned_swtf = get_raw_metrics(tuned_text)
+        chal_fre, chal_swtf = get_raw_metrics(chal_text)
 
-        entry_md = f"""## Entry {i + 1}
-
-### Original (*{m_orig}*)
-```text
-{orig_text}
-```
-
-### Reference Solution (*{m_ref}*)
-```text
-{ref_text}
-```
-
-### {args.base_model} (*{m_base}*)
-```text
-{base_text}
-```
-
-### fine-tuned {args.base_model} (*{m_tuned}*)
-```text
-{tuned_text}
-```
-
-### {CHALLENGER_BASE} tuned with {CHALLENGER_ADAPTER} (*{m_chal}*)
-```text
-{chal_text}
-```
-"""
-
-        report_lines.append(entry_md)
+        # Matrix array row explicitly augmented with untuned baseline outputs
+        json_output["entries"].append([
+            orig_text, orig_fre, orig_swtf,
+            base_text, base_fre, base_swtf,
+            tuned_text, tuned_fre, tuned_swtf,
+            chal_text, chal_fre, chal_swtf,
+            ref_text, ref_fre, ref_swtf,
+        ])
 
     output_path = Path(args.output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(report_lines))
+        json.dump(json_output, f, indent=2, ensure_ascii=False)
+    print(f"Local evaluation file saved to: {output_path}")
 
-    print("=== Evaluation pipeline successfully completed! ===")
+    # ==========================================
+    # S3 SYNC AUTOMATION PHASE
+    # ==========================================
+    s3_bucket = os.environ.get("S3_BUCKET")
+    if s3_bucket:
+        s3_bucket = s3_bucket.strip().rstrip("/")
+        s3_destination = f"s3://{s3_bucket}/evaluation_{args.run_id}.json"
+        print(f"\n☁️ Syncing results to cloud storage: {s3_destination} ...")
+        
+        try:
+            subprocess.run(
+                ["aws", "s3", "cp", str(output_path), s3_destination],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            print("✨ S3 copy operations successfully executed!")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to copy to S3. Error code: {e.returncode}")
+            print(f"Reason: {e.stderr.decode('utf-8').strip()}")
+    else:
+        print("\nℹ️ Environment variable S3_BUCKET not set. Skipping cloud copy.")
+
+    print("\n=== Evaluation pipeline successfully completed! ===")
 
 if __name__ == "__main__":
     main()

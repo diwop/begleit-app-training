@@ -51,6 +51,9 @@ def main():
     is_eval_mode = os.environ.get("EVAL", "false").lower() == "true"
     adapter_exists = os.path.exists(os.path.join(output_dir, "adapter_config.json"))
 
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{timestamp}_run"
+
     if is_eval_mode and adapter_exists:
         print(f"\n[SKIP] EVAL=true detected and adapter found at '{output_dir}'. Bypassing training phase.")
     else:
@@ -95,8 +98,7 @@ def main():
             s3_bucket = os.environ.get("S3_BUCKET", "")
             if s3_bucket:
                 print(f"\nS3_BUCKET '{s3_bucket}' configured. Backing up adapter and checkpoints...")
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                s3_target = f"s3://{s3_bucket}/{timestamp}_run"
+                s3_target = f"s3://{s3_bucket}/{run_id}"
                 
                 try:
                     # Sync the entire output directory recursively
@@ -126,6 +128,7 @@ def main():
         "--seq_length", seq_len,
         "--lora_rank", lora_rank,
         "--output_file", f"{output_dir}/evaluation_results.md"
+        "--run_id", run_id
     ]
 
     print(f"Executing Evaluation: {' '.join(eval_cmd)}\n")
