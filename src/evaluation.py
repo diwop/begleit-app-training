@@ -138,9 +138,40 @@ def main():
             "input_messages": input_messages
         })
 
-    # ========================================================
-    # STAGE 3: CHALLENGER MODEL
-    # ========================================================
+    # Stage 1: Baseline
+    print(f"\n--- INITIALIZING BASE MODEL CONFIGURATION ---")
+    
+    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
+    tokenizer.padding_side = "left"  # Crucial for batch generation
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    formatted_prompts = [
+        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
+        for data in evaluation_data
+    ]
+
+    loading_kwargs = get_model_loading_kwargs(args.base_model)
+    base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
+
+    print(f"\nExecuting native batch generation for Baseline...")
+    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, desc="Evaluating Baseline")
+
+    # Stage 2: Tuned Adapter
+    print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
+    adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
+    
+    print(f"\nExecuting native batch generation for Tuned Adapter...")
+    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, desc="Evaluating Tuned Adapter")
+
+    print("\n[Wiping Memory for Core Models...]")
+    del adapter_model
+    del base_model
+    del tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # Stage 3: Challenger (Schomacker et. al.)
     print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
     
     chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
@@ -157,7 +188,7 @@ def main():
     chal_base = AutoModelForCausalLM.from_pretrained(CHALLENGER_BASE, **chal_loading_kwargs)
     chal_model = PeftModel.from_pretrained(chal_base, CHALLENGER_ADAPTER)
 
-    print(f"\n🚀 Executing native batch generation for Challenger...")
+    print(f"\nExecuting native batch generation for Challenger...")
     challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, desc="Evaluating Challenger")
 
     del chal_model
@@ -166,46 +197,7 @@ def main():
     gc.collect()
     torch.cuda.empty_cache()
 
-    # ========================================================
-    # STAGE 1: BASELINE MODEL EVALUATION
-    # ========================================================
-    print(f"\n--- INITIALIZING BASE MODEL CONFIGURATION ---")
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
-    tokenizer.padding_side = "left"  # Crucial for batch generation
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    formatted_prompts = [
-        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
-        for data in evaluation_data
-    ]
-
-    loading_kwargs = get_model_loading_kwargs(args.base_model)
-    base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
-
-    print(f"\n🚀 Executing native batch generation for Baseline...")
-    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, desc="Evaluating Baseline")
-
-    # ========================================================
-    # STAGE 2: TUNED ADAPTER
-    # ========================================================
-    print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
-    adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
-    
-    print(f"\n🚀 Executing native batch generation for Tuned Adapter...")
-    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, desc="Evaluating Tuned Adapter")
-
-    print("\n[Wiping Memory for Core Models...]")
-    del adapter_model
-    del base_model
-    del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # ==========================================
-    # OUTPUT MARKDOWN REPORT
-    # ==========================================
+    # Output Markdown Report
     print(f"\nWriting Markdown report to {args.output_file}...")
     report_lines = []
     
