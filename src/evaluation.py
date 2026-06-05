@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
 # Hardcoded Challenger Variables
-CHALLENGER_BASE = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+CHALLENGER_BASE = "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
 
 def format_metric(value: float) -> str:
@@ -36,12 +36,7 @@ def get_model_loading_kwargs(model_id: str) -> dict:
         "attn_implementation": "flash_attention_2"  # Forces high-speed math kernels
     }
     
-    if "awq" in m_lower:
-        print(f" -> Mapping {model_id} to AWQ FP16 layout...")
-        base_kwargs["torch_dtype"] = torch.float16
-        return base_kwargs
-        
-    elif "bnb" in m_lower or "4bit" in m_lower:
+    if "bnb" in m_lower or "4bit" in m_lower:
         print(f" -> Mapping {model_id} to BitsAndBytes 4-Bit NF4 layout...")
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
