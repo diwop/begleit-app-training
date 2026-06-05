@@ -10,12 +10,12 @@ if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
     uv pip install --system awscli
     
     # Ensure the target directory exists before syncing
-    mkdir -p /app/output
+    mkdir -p /app/output/adapter
     
     # Sync the remote S3 folder directly into the local evaluation directory
-    aws s3 sync "s3://${S3_BUCKET}/${S3_ADAPTER}" /app/output
+    aws s3 sync "s3://${S3_BUCKET}/${S3_ADAPTER}" /app/output/adapter
     
-    echo "✅ Adapter successfully downloaded to /app/output!"
+    echo "✅ Adapter successfully downloaded to /app/output/adapter!"
     echo ""
 else
     echo "If a valid adapter is found, the training phase will be automatically bypassed."
