@@ -4,6 +4,7 @@ import gc
 import torch
 import textstat
 from pathlib import Path
+from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
@@ -56,10 +57,12 @@ def get_model_loading_kwargs(model_id: str) -> dict:
         base_kwargs["torch_dtype"] = torch.bfloat16
         return base_kwargs
 
-def generate_batched(model, tokenizer, prompts, batch_size=4):
-    """Executes high-throughput left-padded batch generation using native Hugging Face."""
+def generate_batched(model, tokenizer, prompts, batch_size=4, desc="Generating"):
+    """Executes high-throughput left-padded batch generation with a real-time progress bar."""
     results = []
-    for i in range(0, len(prompts), batch_size):
+    
+    # Wrap the range iterator with tqdm
+    for i in tqdm(range(0, len(prompts), batch_size), desc=desc, unit="batch"):
         batch_prompts = prompts[i : i + batch_size]
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to("cuda")
         
@@ -67,7 +70,6 @@ def generate_batched(model, tokenizer, prompts, batch_size=4):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=2048,
-                temperature=0.0,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id
             )
@@ -144,7 +146,7 @@ def main():
     base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
 
     print(f"\n🚀 Executing native batch generation for Baseline...")
-    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, batch_size=4)
+    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, batch_size=4, desc="Evaluating Baseline")
 
     # ========================================================
     # STAGE 2: TUNED ADAPTER
@@ -153,7 +155,7 @@ def main():
     adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
     
     print(f"\n🚀 Executing native batch generation for Tuned Adapter...")
-    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, batch_size=4)
+    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, batch_size=4, desc="Evaluating Tuned Adapter")
 
     print("\n[Wiping Memory for Challenger Model...]")
     del adapter_model
@@ -182,7 +184,7 @@ def main():
     chal_model = PeftModel.from_pretrained(chal_base, CHALLENGER_ADAPTER)
 
     print(f"\n🚀 Executing native batch generation for Challenger...")
-    challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, batch_size=4)
+    challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, batch_size=4, desc="Evaluating Challenger")
 
     del chal_model
     del chal_base
