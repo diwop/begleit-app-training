@@ -3,13 +3,14 @@ import json
 import gc
 import torch
 import textstat
+import time
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
 # Hardcoded Challenger Variables
-CHALLENGER_BASE = "casperhansen/llama-3.1-8b-instruct-awq"
+CHALLENGER_BASE = "cyankiwi/Llama-3.1-8B-Instruct-AWQ-INT4"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
 
 def format_metric(value: float) -> str:
@@ -57,11 +58,15 @@ def get_model_loading_kwargs(model_id: str) -> dict:
         base_kwargs["torch_dtype"] = torch.bfloat16
         return base_kwargs
 
-def generate_batched(model, tokenizer, prompts, batch_size=4, desc="Generating"):
-    """Executes high-throughput left-padded batch generation with a real-time progress bar."""
+def generate_batched(model, tokenizer, prompts, batch_size=8, desc="Generating"):
+    """Executes high-throughput left-padded batch generation with real-time tracking
+
+    and overall tokens-per-second profiling metrics.
+    """
     results = []
+    total_tokens_generated = 0
+    start_time = time.time()  # Start the master clock for this stage
     
-    # Wrap the range iterator with tqdm
     for i in tqdm(range(0, len(prompts), batch_size), desc=desc, unit="batch"):
         batch_prompts = prompts[i : i + batch_size]
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to("cuda")
@@ -75,9 +80,20 @@ def generate_batched(model, tokenizer, prompts, batch_size=4, desc="Generating")
             )
             
         for j, out in enumerate(outputs):
-            gen_tokens = out[inputs.input_ids.shape[1]:]
+            input_len = inputs.input_ids.shape[1]
+            gen_tokens = out[input_len:]  # Isolate only the newly generated tokens
+            total_tokens_generated += len(gen_tokens)
+            
             results.append(tokenizer.decode(gen_tokens, skip_special_tokens=True).strip())
             
+    elapsed_time = time.time() - start_time
+    tokens_per_sec = total_tokens_generated / elapsed_time if elapsed_time > 0 else 0
+    
+    # Print the precise MLOps metrics statement at the end of the stage
+    print(f"\n[{desc}] Finished in {elapsed_time:.2f}s | "
+          f"Generated {total_tokens_generated} tokens | "
+          f"Avg Speed: {tokens_per_sec:.2f} tokens/sec\n")
+          
     return results
 
 def main():
@@ -128,43 +144,6 @@ def main():
         })
 
     # ========================================================
-    # STAGE 1: BASELINE MODEL EVALUATION
-    # ========================================================
-    print(f"\n--- INITIALIZING BASE MODEL CONFIGURATION ---")
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
-    tokenizer.padding_side = "left"  # Crucial for batch generation
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    formatted_prompts = [
-        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
-        for data in evaluation_data
-    ]
-
-    loading_kwargs = get_model_loading_kwargs(args.base_model)
-    base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
-
-    print(f"\n🚀 Executing native batch generation for Baseline...")
-    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, batch_size=4, desc="Evaluating Baseline")
-
-    # ========================================================
-    # STAGE 2: TUNED ADAPTER
-    # ========================================================
-    print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
-    adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
-    
-    print(f"\n🚀 Executing native batch generation for Tuned Adapter...")
-    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, batch_size=4, desc="Evaluating Tuned Adapter")
-
-    print("\n[Wiping Memory for Challenger Model...]")
-    del adapter_model
-    del base_model
-    del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # ========================================================
     # STAGE 3: CHALLENGER MODEL
     # ========================================================
     print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
@@ -184,13 +163,52 @@ def main():
     chal_model = PeftModel.from_pretrained(chal_base, CHALLENGER_ADAPTER)
 
     print(f"\n🚀 Executing native batch generation for Challenger...")
-    challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, batch_size=4, desc="Evaluating Challenger")
+    challenger_results = generate_batched(chal_model, chal_tokenizer, chal_formatted_prompts, desc="Evaluating Challenger")
 
     del chal_model
     del chal_base
     del chal_tokenizer
     gc.collect()
     torch.cuda.empty_cache()
+
+    # ========================================================
+    # STAGE 1: BASELINE MODEL EVALUATION
+    # ========================================================
+    print(f"\n--- INITIALIZING BASE MODEL CONFIGURATION ---")
+    
+    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
+    tokenizer.padding_side = "left"  # Crucial for batch generation
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    formatted_prompts = [
+        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
+        for data in evaluation_data
+    ]
+
+    loading_kwargs = get_model_loading_kwargs(args.base_model)
+    base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
+
+    print(f"\n🚀 Executing native batch generation for Baseline...")
+    baseline_results = generate_batched(base_model, tokenizer, formatted_prompts, desc="Evaluating Baseline")
+
+    # ========================================================
+    # STAGE 2: TUNED ADAPTER
+    # ========================================================
+    print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
+    adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
+    
+    print(f"\n🚀 Executing native batch generation for Tuned Adapter...")
+    tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, desc="Evaluating Tuned Adapter")
+
+    print("\n[Wiping Memory for Challenger Model...]")
+    del adapter_model
+    del base_model
+    del tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+ 
 
     # ==========================================
     # OUTPUT MARKDOWN REPORT

@@ -16,7 +16,7 @@ pad_to_sequence_len: false
 micro_batch_size: 1
 gradient_accumulation_steps: 8
 
-num_epochs: 1
+num_epochs: 3
 optimizer: paged_adamw_8bit # reduces VRAM usage
 lr_scheduler: cosine
 learning_rate: 0.0002
