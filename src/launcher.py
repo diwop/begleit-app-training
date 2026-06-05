@@ -38,13 +38,6 @@ def main():
     # Merge the selected config file with the base
     merged_cfg = merge_configs("config/base.yml", args.config)
 
-    # Extract custom values
-    inference_model = str(merged_cfg.get("inference_model", merged_cfg.get("base_model")))
-
-    # Sanitize custom values
-    if "inference_model" in merged_cfg:
-        del merged_cfg["inference_model"]
-
     # Save the finalized, resolved config for Axolotl to read
     temp_config_path = ".merged-train.yml"
     OmegaConf.save(config=merged_cfg, f=temp_config_path)
@@ -127,7 +120,7 @@ def main():
 
     eval_cmd = [
         "python", "src/evaluation.py",
-        "--base_model", inference_model,  # Restored mapping to the AWQ variable
+        "--base_model", str(merged_cfg.get("base_model")),
         "--adapter_path", output_dir,
         "--dataset_path", str(merged_cfg.datasets[0].path),
         "--seq_length", seq_len,

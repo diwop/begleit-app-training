@@ -1,5 +1,3 @@
-inference_model: casperhansen/mixtral-instruct-awq # custom field, removed before training
-
 base_model: unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit
 load_in_4bit: true
 
