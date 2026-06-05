@@ -10,11 +10,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
 # Hardcoded Challenger Variables
-CHALLENGER_BASE = "cyankiwi/Llama-3.1-8B-Instruct-AWQ-INT4"
+CHALLENGER_BASE = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
-
-# Stable, un-gated Llama-3.1 reference repository to bypass "TokenizersBackend" error
-CHALLENGER_TOKENIZER_REF = "unsloth/meta-llama-3.1-8b-instruct"
 
 def format_metric(value: float) -> str:
     """Formats a float to 1 optional decimal place."""
@@ -151,8 +148,7 @@ def main():
     # ========================================================
     print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
     
-    # FIX: Points to stable, backwards-compatible unsloth tokenizer repository config
-    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_TOKENIZER_REF)
+    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
     chal_tokenizer.padding_side = "left"
     if chal_tokenizer.pad_token is None:
         chal_tokenizer.pad_token = chal_tokenizer.eos_token
