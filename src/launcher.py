@@ -38,9 +38,6 @@ def main():
     # Merge the selected config file with the base
     merged_cfg = merge_configs("config/base.yml", args.config)
 
-    print(f"\n[DEBUG] Found base_model: {merged_cfg.get('base_model')}")
-    print(f"[DEBUG] Found inference_model: {merged_cfg.get('inference_model')}\n")
-
     # Extract custom values
     inference_model = str(merged_cfg.get("inference_model", merged_cfg.get("base_model")))
 
