@@ -15,6 +15,10 @@ evals_per_epoch: 0
 saves_per_epoch: 1
 weight_decay: 0.0
 
+# Explicitly configure Axolotl to the custom chat template below
+# into the final adapter's tokenizer_config.json so vLLM can use it.
+chat_template: jinja
+
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template

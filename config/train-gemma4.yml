@@ -3,3 +3,12 @@ inference_model: majentik/gemma-4-26B-A4B-it-TurboQuant-AWQ-4bit # custom field,
 base_model: unsloth/gemma-4-26B-A4B-it
 unsloth: true
 load_in_4bit: true
+
+datasets:
+  - path: data/train/dataset.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content
