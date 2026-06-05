@@ -95,6 +95,7 @@ def main():
     # Spin up the vLLM Engine
     llm = LLM(
         model=args.base_model,
+        tokenizer=args.adapter_path, # need to take the adapter's tokenizer config because the plain inference model has a different one
         quantization="awq",
         enable_lora=True,
         max_model_len=args.seq_length,
