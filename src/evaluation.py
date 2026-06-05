@@ -86,7 +86,7 @@ def main():
     print(f"\n--- INITIALIZING vLLM: Loading AWQ Base Model ({args.base_model}) with LoRA Enabled ---")
     
     # Load base tokenizer to format prompts natively via chat template
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
     formatted_prompts = [
         tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
         for data in evaluation_data
