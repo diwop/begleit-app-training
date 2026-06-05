@@ -13,6 +13,9 @@ from peft import PeftModel
 CHALLENGER_BASE = "cyankiwi/Llama-3.1-8B-Instruct-AWQ-INT4"
 CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
 
+# Stable, un-gated Llama-3.1 reference repository to bypass "TokenizersBackend" error
+CHALLENGER_TOKENIZER_REF = "unsloth/meta-llama-3.1-8b-instruct"
+
 def format_metric(value: float) -> str:
     """Formats a float to 1 optional decimal place."""
     formatted = f"{value:.1f}"
@@ -148,7 +151,8 @@ def main():
     # ========================================================
     print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
     
-    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_BASE)
+    # FIX: Points to stable, backwards-compatible unsloth tokenizer repository config
+    chal_tokenizer = AutoTokenizer.from_pretrained(CHALLENGER_TOKENIZER_REF)
     chal_tokenizer.padding_side = "left"
     if chal_tokenizer.pad_token is None:
         chal_tokenizer.pad_token = chal_tokenizer.eos_token
@@ -201,14 +205,12 @@ def main():
     print(f"\n🚀 Executing native batch generation for Tuned Adapter...")
     tuned_results = generate_batched(adapter_model, tokenizer, formatted_prompts, desc="Evaluating Tuned Adapter")
 
-    print("\n[Wiping Memory for Challenger Model...]")
+    print("\n[Wiping Memory for Core Models...]")
     del adapter_model
     del base_model
     del tokenizer
     gc.collect()
     torch.cuda.empty_cache()
-
- 
 
     # ==========================================
     # OUTPUT MARKDOWN REPORT
@@ -239,7 +241,7 @@ def main():
 
 ### Reference Solution (*{m_ref}*)
 ```text
-{data['ref_text']}
+{ref_text}
 ```
 
 ### {args.base_model} (*{m_base}*)
