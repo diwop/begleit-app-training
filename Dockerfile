@@ -1,5 +1,5 @@
 # Pick base image with CUDA 12.1 which is optimized for HSUper A100 and L40S GPUs
-FROM axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1
+FROM axolotlai/axolotl-cloud:main-py3.11-cu128-2.9.1
 
 # Make Axolotl available globally
 ENV PATH="/root/miniconda3/envs/py3.11/bin:$PATH"
