@@ -127,7 +127,7 @@ def main():
         "--dataset_path", str(merged_cfg.datasets[0].path),
         "--seq_length", seq_len,
         "--lora_rank", lora_rank,
-        "--output_file", f"{output_dir}/evaluation_results.md"
+        "--output_file", f"{output_dir}/evaluation_results.md",
         "--run_id", run_id
     ]
 
