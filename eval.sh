@@ -7,7 +7,9 @@ echo "🚀 INITIATING EVALUATION-ONLY MODE"
 if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
     echo "📥 S3_BUCKET and S3_ADAPTER detected!"
     echo "Downloading adapter from s3://${S3_BUCKET}/${S3_ADAPTER}..."
-    uv pip install --system awscli
+
+    # Make sure aws cli is available
+    uv sync
     
     # Ensure the target directory exists before syncing
     mkdir -p /app/output/adapter

@@ -14,11 +14,10 @@ echo "Logs will be saved to: $LOG_FILE"
 
 # Install (optional) delta between docker image and current state
 echo "Syncing package dependencies..."
-uv export --no-emit-project --format requirements-txt > requirements.txt
-uv pip install --system -r requirements.txt
+uv sync
 
 echo "Pulling dataset from DVC..."
-python -m dvc pull
+uv run python -m dvc pull
 
 echo "Executing dynamic hardware launcher..."
 
@@ -28,7 +27,7 @@ set +e
 # Use 'tee' to print logs to the screen AND save them to the persistent disk.
 # 2>&1 captures both standard output and error messages
 # -u enforces unbuffered output by python
-python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
+uv run python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 
