@@ -1,13 +1,10 @@
 #!/bin/bash
 set -e
 
-echo "🚀 INITIATING EVALUATION-ONLY MODE"
-
 cd /runner/repo/
 
 # Check if both S3 variables are provided
 if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
-    echo "📥 S3_BUCKET and S3_ADAPTER detected!"
     echo "Downloading adapter from s3://${S3_BUCKET}/${S3_ADAPTER}..."
 
     uv add awscli # make sure aws cli is available
