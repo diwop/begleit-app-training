@@ -15,7 +15,7 @@ echo "Target Config: config/${TRAIN}.yml"
 echo "Logs will be saved to: $LOG_FILE"
 
 echo "Pulling dataset from DVC..."
-uv python -m dvc pull
+uv run python -m dvc pull
 
 echo "Executing dynamic hardware launcher..."
 
