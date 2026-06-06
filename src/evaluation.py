@@ -30,7 +30,7 @@ def get_model_loading_kwargs(model_id: str) -> dict:
     base_kwargs = {
         "device_map": "auto",
         "attn_implementation": "sdpa", # bypasses flash-attn memory bug on newer transformers versions
-        "torch_dtype": torch.bfloat16  # Always safe to set as the compute baseline
+        "dtype": torch.bfloat16  # Always safe to set as the compute baseline
     }
     
     # Check if the model is ALREADY quantized
