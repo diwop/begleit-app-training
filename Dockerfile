@@ -4,19 +4,20 @@ FROM axolotlai/axolotl-uv:main-py3.11-cu128-2.9.1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Permanently activate the environment for all subsequent commands and scripts
-ENV PATH="/opt/venv/bin:$PATH"
-ENV VIRTUAL_ENV="/opt/venv"
+# 1. PERMANENTLY activate Axolotl's pre-built master environment!
+ENV VIRTUAL_ENV="/workspace/axolotl-venv"
+ENV PATH="/workspace/axolotl-venv/bin:$PATH"
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /runner
 
 # Copy dependency definition files
 COPY pyproject.toml uv.lock ./
 
-# Create the transparent environment and pre-install the heavy dependencies
-# The --system-site-packages flag allows pass-through to the base PyTorch installation.
-RUN uv venv --system-site-packages /opt/venv && \
-    uv sync --active
+# Use export + pip install to SAFELY BOLT ON packages without deleting torch
+RUN uv export --no-emit-project --format requirements-txt > requirements.txt && \
+    uv pip install -r requirements.txt
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
@@ -24,4 +25,5 @@ RUN chmod +x /runner/entrypoint.sh
 # Always run the set up and start Jupyter lab
 ENTRYPOINT ["/bin/bash", "/runner/entrypoint.sh"]
 
+# Set the default action to execute the current script in the repository
 CMD ["/bin/bash", "/runner/repo/train.sh"]

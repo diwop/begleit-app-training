@@ -2,7 +2,8 @@
 set -e
 
 cd /runner/repo/
-uv sync --active # Install (optional) dependency delta
+uv export --no-emit-project --format requirements-txt > requirements.txt
+uv pip install -r requirements.txt # Install (optional) dependency delta
 
 TRAIN=${TRAIN:-"train"}
 

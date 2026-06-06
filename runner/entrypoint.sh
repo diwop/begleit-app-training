@@ -12,8 +12,8 @@ echo "=== Initializing Worker Node ==="
 # Start JupyterLab Sidecar in the background
 echo "Starting JupyterLab..."
 
+# Safely inject Jupyter into the active axolotl-venv
 if ! command -v jupyter &> /dev/null; then
-    echo "Jupyter not found. Installing into the active transparent venv..."
     uv pip install jupyterlab
 fi
 
