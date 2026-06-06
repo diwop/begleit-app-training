@@ -8,8 +8,6 @@ ENV PYTHONUNBUFFERED=1
 ENV VIRTUAL_ENV="/workspace/axolotl-venv"
 ENV PATH="/workspace/axolotl-venv/bin:$PATH"
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
 WORKDIR /runner
 
 # Copy dependency definition files
