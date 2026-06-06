@@ -4,9 +4,6 @@ FROM axolotlai/axolotl-uv:main-py3.11-cu128-2.9.1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Force uv to anchor the virtual environment to a safe, global location
-ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
-
 # Permanently activate the environment for all subsequent commands and scripts
 ENV PATH="/opt/venv/bin:$PATH"
 ENV VIRTUAL_ENV="/opt/venv"
@@ -19,7 +16,7 @@ COPY pyproject.toml uv.lock ./
 # Create the transparent environment and pre-install the heavy dependencies
 # The --system-site-packages flag allows pass-through to the base PyTorch installation.
 RUN uv venv --system-site-packages /opt/venv && \
-    uv sync
+    uv sync --active
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh

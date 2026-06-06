@@ -2,7 +2,7 @@
 set -e
 
 cd /runner/repo/
-uv sync # Install (optional) dependency delta
+uv sync --active # Install (optional) dependency delta
 
 TRAIN=${TRAIN:-"train"}
 
@@ -15,7 +15,7 @@ echo "Target Config: config/${TRAIN}.yml"
 echo "Logs will be saved to: $LOG_FILE"
 
 echo "Pulling dataset from DVC..."
-uv run python -m dvc pull
+python -m dvc pull
 
 echo "Executing dynamic hardware launcher..."
 
@@ -25,7 +25,7 @@ set +e
 # Use 'tee' to print logs to the screen AND save them to the persistent disk.
 # 2>&1 captures both standard output and error messages
 # -u enforces unbuffered output by python
-uv run python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
+python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 

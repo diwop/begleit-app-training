@@ -7,7 +7,7 @@ cd /runner/repo/
 if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
     echo "Downloading adapter from s3://${S3_BUCKET}/${S3_ADAPTER}..."
 
-    uv add awscli # make sure aws cli is available
+    uv add --active awscli # make sure aws cli is available
 
     # Ensure the target directory exists before syncing
     mkdir -p /app/output/adapter
