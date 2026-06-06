@@ -198,6 +198,8 @@ def main():
         for data in evaluation_data
     ]
 
+    args.base_model = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+
     loading_kwargs = get_model_loading_kwargs(args.base_model)
     base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
     
