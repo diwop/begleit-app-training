@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export UV_SYSTEM_PYTHON=1 # so that python sees uv's packages -> TODO: entrypoint.sh
+
 TRAIN=${TRAIN:-"train"}
 
 export HF_HOME="/workspace/huggingface_cache"
@@ -17,7 +19,7 @@ echo "Syncing package dependencies..."
 uv sync
 
 echo "Pulling dataset from DVC..."
-uv run python -m dvc pull
+python -m dvc pull
 
 echo "Executing dynamic hardware launcher..."
 
@@ -27,7 +29,7 @@ set +e
 # Use 'tee' to print logs to the screen AND save them to the persistent disk.
 # 2>&1 captures both standard output and error messages
 # -u enforces unbuffered output by python
-uv run python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
+python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 

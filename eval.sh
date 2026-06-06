@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export UV_SYSTEM_PYTHON=1 # so that python sees uv's packages -> TODO: entrypoint.sh
+
 echo "🚀 INITIATING EVALUATION-ONLY MODE"
 
 # Check if both S3 variables are provided
@@ -9,7 +11,7 @@ if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
     echo "Downloading adapter from s3://${S3_BUCKET}/${S3_ADAPTER}..."
 
     # Make sure aws cli is available
-    uv sync
+    uv sync # TODO: move to entrypoint.sh
     
     # Ensure the target directory exists before syncing
     mkdir -p /app/output/adapter
