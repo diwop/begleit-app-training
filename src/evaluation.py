@@ -58,6 +58,12 @@ def get_model_loading_kwargs(model_id: str) -> dict:
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
+
+        base_kwargs["max_memory"] = { # TODO: make that dynamic
+            0: "80GB", 
+            1: "80GB"
+        }
+
         return base_kwargs
 
 def calculate_optimal_batch_size(model, current_batch_max_tokens, safety_factor=0.7) -> int:
