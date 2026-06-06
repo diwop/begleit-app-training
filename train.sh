@@ -2,8 +2,13 @@
 set -e
 
 cd /runner/repo/
+
+# Install (optional) dependency delta
 uv export --no-emit-project --format requirements-txt > requirements.txt
-uv pip install -r requirements.txt # Install (optional) dependency delta
+uv pip install -r requirements.txt
+
+# dynamically bolt on the AWQ backend without triggering a global dependency resolution
+uv pip install gptqmodel # required for AWQ base models in evaluation
 
 TRAIN=${TRAIN:-"train"}
 

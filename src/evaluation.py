@@ -24,32 +24,40 @@ def get_raw_metrics(text: str) -> tuple:
     return fre, wstf
 
 def get_model_loading_kwargs(model_id: str) -> dict:
-    """Dynamically determines backend loading arguments for bnb-4bit or native BF16."""
+    """Dynamically determines backend loading arguments for quantization."""
     m_lower = model_id.lower()
     
     base_kwargs = {
         "device_map": "auto",
-        "attn_implementation": "sdpa", # bypasses flash-attn memory bug on newer transformers versions
-        "dtype": torch.bfloat16  # Always safe to set as the compute baseline
+        "attn_implementation": "sdpa", 
+        "torch_dtype": torch.bfloat16  
     }
     
-    # Check if the model is ALREADY quantized
-    if "bnb" in m_lower or "4bit" in m_lower or "awq" in m_lower:
-        print(f" -> Model {model_id} is already quantized. Bypassing custom BitsAndBytesConfig...")
-        # We do NOT add a quantization_config here. 
-        # Hugging Face will automatically read it from the model's config.json!
+    # Intercept AWQ explicitly to stop the Marlin JIT compiler
+    if "awq" in m_lower:
+        print(f" -> AWQ model detected. Forcing GEMM backend to stop Marlin JIT...")
+        base_kwargs["quantization_config"] = AwqConfig(
+            bits=4,
+            group_size=128,
+            zero_point=True,
+            version="gemm"  # <--- The Magic Bullet that bypasses Marlin
+        )
         return base_kwargs
         
-    # Check if the model is unquantized (Needs on-the-fly shrinking to fit in VRAM)
+    # Handle standard pre-quantized BitsAndBytes models
+    elif "bnb" in m_lower or "4bit" in m_lower:
+        print(f" -> BNB pre-quantized model detected. Bypassing custom config...")
+        return base_kwargs
+        
+    # Handle unquantized models (needs on-the-fly shrinking)
     else:
-        print(f" -> Massive unquantized model {model_id} detected. Shrinking to 4-Bit NF4 on the fly...")
-        bnb_config = BitsAndBytesConfig(
+        print(f" -> Unquantized model detected. Shrinking to 4-Bit NF4 on the fly...")
+        base_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        base_kwargs["quantization_config"] = bnb_config
         return base_kwargs
 
 def calculate_optimal_batch_size(model, current_batch_max_tokens, safety_factor=0.7) -> int:
