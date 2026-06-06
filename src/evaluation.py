@@ -60,8 +60,8 @@ def get_model_loading_kwargs(model_id: str) -> dict:
         )
 
         base_kwargs["max_memory"] = { # TODO: make that dynamic
-            0: "48GB", 
-            1: "48GB"
+            0: "60GB", 
+            1: "60GB"
         }
 
         return base_kwargs
