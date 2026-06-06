@@ -29,7 +29,7 @@ def get_model_loading_kwargs(model_id: str) -> dict:
     
     base_kwargs = {
         "device_map": "auto",
-        "attn_implementation": "flash_attention_2"
+        "attn_implementation": "sdpa" # bypasses flash-attn memory bug on newer transformers versions
     }
     
     if "bnb" in m_lower or "4bit" in m_lower:
