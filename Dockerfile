@@ -1,21 +1,25 @@
-# Pick base image with CUDA 12.1 which is optimized for HSUper A100 and L40S GPUs
-FROM axolotlai/axolotl-cloud:main-py3.11-cu128-2.9.1
+# Optimized for L40S GPUs
+FROM axolotlai/axolotl-uv:main-py3.11-cu128-2.9.1
 
-# Make Axolotl available globally
-ENV PATH="/root/miniconda3/envs/py3.11/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Force uv to anchor the virtual environment to a safe, global location
+ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
+
+# Permanently activate the environment for all subsequent commands and scripts
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
 
 WORKDIR /runner
 
 # Copy dependency definition files
 COPY pyproject.toml uv.lock ./
 
-# Pre-install heavy dependencies so the runtime install is fast
-RUN uv export --no-emit-project --format requirements-txt > requirements.txt && \
-    uv pip install --system --no-cache -r requirements.txt
+# Create the transparent environment and pre-install the heavy dependencies
+# The --system-site-packages flag allows pass-through to the base PyTorch installation.
+RUN uv venv --system-site-packages /opt/venv && \
+    uv sync
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
@@ -23,5 +27,4 @@ RUN chmod +x /runner/entrypoint.sh
 # Always run the set up and start Jupyter lab
 ENTRYPOINT ["/bin/bash", "/runner/entrypoint.sh"]
 
-# Set the default action to execute the current script in the repository
 CMD ["/bin/bash", "/runner/repo/train.sh"]

@@ -13,7 +13,8 @@ echo "=== Initializing Worker Node ==="
 echo "Starting JupyterLab..."
 
 if ! command -v jupyter &> /dev/null; then
-    uv pip install --system jupyterlab
+    echo "Jupyter not found. Installing into the active transparent venv..."
+    uv pip install jupyterlab
 fi
 
 jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
@@ -30,7 +31,7 @@ chmod +x /runner/repo/eval.sh
 # Prevent loop of death
 if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
     echo "Defaulting execution to repository training script..."
-    exec bash ./train.sh
+    exec bash /runner/repo/train.sh
 else
     echo "Handing off execution to: $@"
     exec "$@"

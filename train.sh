@@ -10,13 +10,11 @@ LOG_FILE="/workspace/training_run.log"
 
 cd /runner/repo/
 
+uv sync # Install (optional)
+
 echo "=== Repository Execution Started ==="
 echo "Target Config: config/${TRAIN}.yml"
 echo "Logs will be saved to: $LOG_FILE"
-
-# Install (optional) delta between docker image and current state
-echo "Syncing package dependencies..."
-uv sync
 
 echo "Pulling dataset from DVC..."
 python -m dvc pull
