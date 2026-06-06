@@ -8,7 +8,7 @@ import time
 import subprocess
 from pathlib import Path
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AwqConfig
 from peft import PeftModel
 
 # Hardcoded Challenger Variables
