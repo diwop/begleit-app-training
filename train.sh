@@ -7,8 +7,8 @@ uv pip install -r requirements.txt # Install (optional) dependency delta
 
 TRAIN=${TRAIN:-"train"}
 
-export HF_HOME="/workspace/huggingface_cache"
-LOG_FILE="/workspace/training_run.log"
+export HF_HOME="/app/huggingface_cache"
+LOG_FILE="/app/training_run.log"
 
 
 echo "=== Repository Execution Started ==="
