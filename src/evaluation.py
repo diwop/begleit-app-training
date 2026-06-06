@@ -29,11 +29,20 @@ def get_model_loading_kwargs(model_id: str) -> dict:
     
     base_kwargs = {
         "device_map": "auto",
-        "attn_implementation": "sdpa" # bypasses flash-attn memory bug on newer transformers versions
+        "attn_implementation": "sdpa", # bypasses flash-attn memory bug on newer transformers versions
+        "torch_dtype": torch.bfloat16  # Always safe to set as the compute baseline
     }
     
-    if "bnb" in m_lower or "4bit" in m_lower:
-        print(f" -> Mapping {model_id} to BitsAndBytes 4-Bit NF4 layout...")
+    # Check if the model is ALREADY quantized
+    if "bnb" in m_lower or "4bit" in m_lower or "awq" in m_lower:
+        print(f" -> Model {model_id} is already quantized. Bypassing custom BitsAndBytesConfig...")
+        # We do NOT add a quantization_config here. 
+        # Hugging Face will automatically read it from the model's config.json!
+        return base_kwargs
+        
+    # Check if the model is unquantized (Needs on-the-fly shrinking to fit in VRAM)
+    else:
+        print(f" -> Massive unquantized model {model_id} detected. Shrinking to 4-Bit NF4 on the fly...")
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -41,10 +50,6 @@ def get_model_loading_kwargs(model_id: str) -> dict:
             bnb_4bit_use_double_quant=True,
         )
         base_kwargs["quantization_config"] = bnb_config
-        return base_kwargs
-    else:
-        print(f" -> Mapping {model_id} to native unquantized BF16 layout...")
-        base_kwargs["torch_dtype"] = torch.bfloat16
         return base_kwargs
 
 def calculate_optimal_batch_size(model, current_batch_max_tokens, safety_factor=0.7) -> int:

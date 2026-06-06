@@ -22,7 +22,7 @@ def main():
     args = parser.parse_args()
 
     # Apply the memory fragmentation fix globally inside the script
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
     # Detect the GPUs and their VRAM
     if not torch.cuda.is_available():
