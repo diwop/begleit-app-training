@@ -4,8 +4,8 @@
 
 MODELS_TO_PROCESS = [
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "mistralai/Mistral-Small-4-119B-2603",
     "google/gemma-4-26B-A4B",
-    # TODO: Mistral-Small-Instruct
     # "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
 ]
 
