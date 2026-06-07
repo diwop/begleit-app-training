@@ -1,13 +1,8 @@
 # This script downloads large language models from HuggingFace, quantizes them to 4-bit precision, and uploads them to an S3 bucket.
 # It is used to pre-build the models for fine-tuning, evaluation and production.
 # To run this script, start the container with command "bash /runner/repo/quantize.sh".
-
-MODELS_TO_PROCESS = [
-    "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    "mistralai/Mistral-Small-4-119B-2603",
-    "google/gemma-4-26B-A4B",
-    # "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
-]
+#
+# Please note: This setup needs 350 GB of disk space and lots of VRAM, e.g. 6x L40S with 48 GB each.
 
 import os
 import sys
@@ -17,6 +12,13 @@ import torch
 import boto3
 from botocore.exceptions import ClientError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+MODELS_TO_PROCESS = [
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "mistralai/Mistral-Small-4-119B-2603",
+    "google/gemma-4-26B-A4B",
+    # "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
+]
 
 # Fix PyTorch memory fragmentation globally
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
