@@ -15,8 +15,8 @@ from transformers import AutoTokenizer
 
 MODELS_TO_PROCESS = [
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    "google/gemma-4-26B-A4B",
-    "mistralai/Mistral-Small-4-119B-2603", 
+    #"google/gemma-4-26B-A4B",
+    #"mistralai/Mistral-Small-4-119B-2603", 
     # TODO: "meta-llama/Llama-3.1-8B",
 ]
 
