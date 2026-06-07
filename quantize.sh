@@ -7,4 +7,6 @@ cd /runner/repo/
 uv export --no-emit-project --format requirements-txt > requirements.txt
 uv pip install -r requirements.txt
 
+uv pip install autoawq
+
 python src/quantize.py
