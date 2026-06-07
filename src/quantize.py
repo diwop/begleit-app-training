@@ -1,3 +1,14 @@
+# This script downloads large language models from HuggingFace, quantizes them to 4-bit precision, and uploads them to an S3 bucket.
+# It is used to pre-build the models for fine-tuning, evaluation and production.
+# To run this script, start the container with command "bash /runner/repo/quantize.sh".
+
+MODELS_TO_PROCESS = [
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "google/gemma-4-26B-A4B",
+    # TODO: Mistral-Small-Instruct
+    # "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
+]
+
 import os
 import sys
 import shutil
@@ -17,13 +28,6 @@ os.environ["HF_HOME"] = HF_CACHE_DIR
 s3_bucket = os.environ.get("S3_BUCKET")
 S3_BASE_PREFIX = "models/bnb-4bit/"
 LOCAL_EXPORT_DIR = "/app/export_temp"
-
-MODELS_TO_PROCESS = [
-    "google/gemma-4-26B-A4B",
-    "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
-    # TODO: Gemma 4 / Mistral-Small-Instruct
-]
 
 def check_s3_model_exists(s3_client, s3_prefix: str) -> bool:
     """Checks if the model's config.json already exists in the S3 bucket."""
