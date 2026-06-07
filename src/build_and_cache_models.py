@@ -19,8 +19,9 @@ S3_BASE_PREFIX = "models/bnb-4bit/"
 LOCAL_EXPORT_DIR = "/app/export_temp"
 
 MODELS_TO_PROCESS = [
+    "google/gemma-4-26B-A4B",
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    "meta-llama/Llama-3.1-8B",
+    "meta-llama/Llama-3.1-8B", # for Schomacker et. al. challenger model
     # TODO: Gemma 4 / Mistral-Small-Instruct
 ]
 
