@@ -82,8 +82,7 @@ def process_model(model_id: str, s3_client):
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        llm_int8_enable_fp32_cpu_offload=True  # Allow offloading at edge of OOM
+        bnb_4bit_use_double_quant=True
     )
     
     # 2. Download and load into VRAM
