@@ -4,6 +4,10 @@ unsloth: false # Mandatory for multi-GPU training
 load_in_8bit: true # VRAM is sufficient
 load_in_4bit: false
 
+# OVERRIDE: Tell Axolotl to use standard LoRA mapping layers 
+# to allow compatibility with 8-bit base weight quantization.
+adapter: lora
+
 output_dir: /app/output/adapter/gemma4
 
 datasets:
