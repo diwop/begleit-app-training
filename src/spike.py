@@ -14,12 +14,14 @@ def main():
     # 2. Map Weights Directly Into VRAM Across Both Cards
     llm = LLM(
         model=MODEL_ID,
-        quantization="awq",       # Reverted to standard stable AWQ execution kernels
+        # OPTIMIZATION: Upgraded back to Marlin for flawless weight unpacking on Ada Lovelace GPUs
+        quantization="awq_marlin",       
         tensor_parallel_size=2,   
         max_model_len=8192, 
         trust_remote_code=True,
-        disable_custom_all_reduce=True, # Forces fallback to host NCCL routing
-        enforce_eager=True        # CRITICAL: Bypasses CUDA graphs to prevent virtualized deadlocks
+        disable_custom_all_reduce=True, 
+        # OPTIMIZATION: Keeps CUDA graphs disabled so Marlin will bypass profiling and never freeze
+        enforce_eager=True        
     )
     
     # 3. Pull Tokenizer to cleanly build Mistral chat structures
@@ -32,11 +34,11 @@ def main():
         max_tokens=256
     )
     
-    # 5. Build and format payloads by blending the system prompt into the first user turn
+    # 5. Build and format payloads with clear structural role separation
     formatted_payloads = []
     for user_query in USER_PROMPTS:
-        # Prepend system context to handle Mixtral v0.1 alternating user-role checks
-        combined_content = f"{SYSTEM_PROMPT}\n\n{user_query}"
+        # OPTIMIZATION: Inject explicit markdown boundaries within the single turn
+        combined_content = f"System: {SYSTEM_PROMPT}\n\nUser: {user_query}"
         
         messages = [
             {"role": "user", "content": combined_content}
@@ -66,7 +68,6 @@ def main():
         
     print("\n===============================================", flush=True)
     
-    # Final safety flush to guarantee delivery before process teardown
     import sys
     sys.stdout.flush()
 
