@@ -1,19 +1,17 @@
-import argparse
-import json
-import gc
+# --- src/evaluation.py ---
 import os
-import torch
-import textstat
-import time
-import subprocess
+import gc
+import sys
+import json
+from datetime import datetime
 from pathlib import Path
-from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AwqConfig
-from peft import PeftModel
-
-# Hardcoded Challenger Variables
-CHALLENGER_BASE = "unsloth/meta-llama-3.1-8b-instruct-bnb-4bit"
-CHALLENGER_ADAPTER = "tschomacker/lora_adapter_llama_3.1_8B"
+import torch
+import boto3
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+from vllm.lora.request import LoRARequest
+from vllm.distributed.parallel_state import destroy_model_parallel
+import textstat
 
 def get_raw_metrics(text: str) -> tuple:
     """Calculates German textstat metrics and returns rounded raw floats."""
@@ -23,310 +21,266 @@ def get_raw_metrics(text: str) -> tuple:
     wstf = round(textstat.wiener_sachtextformel(text, 1), 1)
     return fre, wstf
 
-def get_model_loading_kwargs(model_id: str) -> dict:
-    """Dynamically determines backend loading arguments for quantization."""
-    m_lower = model_id.lower()
-    
-    base_kwargs = {
-        "device_map": "auto",
-        "attn_implementation": "sdpa", 
-        "torch_dtype": torch.bfloat16  
-    }
-    
-    # Intercept AWQ explicitly to stop the Marlin JIT compiler
-    if "awq" in m_lower:
-        print(f" -> AWQ model detected. Forcing GEMM backend to stop Marlin JIT...")
-        base_kwargs["quantization_config"] = AwqConfig(
-            bits=4,
-            group_size=128,
-            zero_point=True,
-            version="gemm"  # <--- The Magic Bullet that bypasses Marlin
-        )
-        return base_kwargs
-        
-    # Handle standard pre-quantized BitsAndBytes models
-    elif "bnb" in m_lower or "4bit" in m_lower:
-        print(f" -> BNB pre-quantized model detected. Bypassing custom config...")
-        return base_kwargs
-        
-    # Handle unquantized models (needs on-the-fly shrinking)
-    else:
-        print(f" -> Unquantized model detected. Shrinking to 4-Bit NF4 on the fly...")
-        base_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-
-        base_kwargs["max_memory"] = { # TODO: make that dynamic
-            0: "60GB", 
-            1: "60GB"
-        }
-
-        return base_kwargs
-
-def calculate_optimal_batch_size(model, current_batch_max_tokens, safety_factor=0.7) -> int:
-    """Dynamically calculates the optimal batch size based on remaining free VRAM."""
-    device = next(model.parameters()).device
-    if device.type != "cuda":
-        return 4
-        
-    free_vram, _ = torch.cuda.mem_get_info(device)
-    config = model.config
-    num_layers = config.num_hidden_layers
-    num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
-    head_dim = config.hidden_size // config.num_attention_heads
-    
-    bytes_per_element = 2
-    kv_cache_per_seq = 2 * num_layers * num_kv_heads * head_dim * current_batch_max_tokens * bytes_per_element
-    
-    usable_vram = free_vram * safety_factor
-    optimal_batch_size = int(usable_vram // kv_cache_per_seq)
-    return max(1, min(optimal_batch_size, 32))
-
-def generate_batched(model, tokenizer, evaluation_data, formatted_prompts, desc="Generating"):
-    """Sorts evaluation data by target length to perform variable-sized 
-
-    bucket batching with dynamic, OOM-safe hardware utilization.
-    """
-    results_dict = {}
-    
-    # Sort data by reference token size to build optimal, contiguous length buckets
-    sorted_indices = sorted(
-        range(len(evaluation_data)), 
-        key=lambda idx: len(tokenizer.encode(evaluation_data[idx]["reference"])),
-        reverse=True
+def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) -> str:
+    """Checks for the existence of a file across multiple extensions. Raises Error if absent."""
+    for ext in extensions:
+        full_path = f"{base_path_str}{ext}"
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+                
+    raise FileNotFoundError(
+        f"❌ Data Integrity Violation: Required file not found for base path '{base_path_str}' "
+        f"with extensions {extensions}."
     )
+
+def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
+    """Initializes vLLM engine, injects active adapters, handles batch evaluation sequences."""
+    if evaluation_set is None:
+        evaluation_set = []
+        
+    print("\n" + "="*60)
+    print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {model_id}")
+    if adapter_id:
+        print(f"🧬 Hooking Active Local Adapter: {adapter_id}")
+    else:
+        print("💡 Running in Vanilla Baseline Mode (No Adapter)")
+    print("="*60, flush=True)
     
-    pbar = tqdm(total=len(evaluation_data), desc=desc, unit="sample")
-    i = 0
-    start_time = time.time()
-    total_tokens_generated = 0
+    generated_responses = []
     
-    while i < len(sorted_indices):
-        sample_idx = sorted_indices[i]
-        reference_tokens = len(tokenizer.encode(evaluation_data[sample_idx]["reference"]))
+    try:
+        llm_kwargs = {
+            "model": model_id,
+            "quantization": quantization_type,
+            "tensor_parallel_size": 2,          # Slices layers across 2 GPUs
+            "max_model_len": max_len,           
+            "trust_remote_code": True,
+            "disable_custom_all_reduce": True,  
+            "enforce_eager": True,              
+            "gpu_memory_utilization": 0.82      
+        }
         
-        # Allocate defensive 15% generation overhead ceiling buffer
-        max_new_tokens_needed = max(128, int(reference_tokens * 1.15))
+        # Enforce text-only parameters for Mistral multimodal models to avoid profiling crashes
+        if "mistral" in model_id.lower():
+            print("🛑 Disabling vision modalities for text-only Mistral inference sequence...")
+            llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
+            
+        if adapter_id:
+            llm_kwargs["enable_lora"] = True
+            llm_kwargs["max_loras"] = 1
+            
+        llm = LLM(**llm_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
         
-        # Recalculate OOM boundaries on the fly for the current bucket
-        batch_size = calculate_optimal_batch_size(model, max_new_tokens_needed)
-        batch_indices = sorted_indices[i : i + batch_size]
-        batch_prompts = [formatted_prompts[idx] for idx in batch_indices]
-        
-        inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to("cuda")
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens_needed,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id
+        templated_inputs = []
+        for prompt_item in evaluation_set:
+            messages = [
+                {"role": "system", "content": prompt_item["system"]},
+                {"role": "user", "content": prompt_item["templated_user"]}
+            ]
+            full_string = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
             )
+            templated_inputs.append(full_string)
             
-        for j, out in enumerate(outputs):
-            global_idx = batch_indices[j]
-            gen_tokens = out[inputs.input_ids.shape[1]:]
-            total_tokens_generated += len(gen_tokens)
-            results_dict[global_idx] = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
-            
-        pbar.update(len(batch_indices))
-        i += len(batch_indices)
+        sampling_params = SamplingParams(
+            temperature=0.3,
+            top_p=0.95,
+            max_tokens=4096
+        )
         
-    pbar.close()
-    elapsed_time = time.time() - start_time
-    tokens_per_sec = total_tokens_generated / elapsed_time if elapsed_time > 0 else 0
-    print(f"✨ [{desc}] Finished in {elapsed_time:.2f}s | Speed: {tokens_per_sec:.2f} tokens/sec\n")
-    
-    return [results_dict[k] for k in sorted(results_dict.keys())]
+        generate_kwargs = {}
+        if adapter_id:
+            lora_request = LoRARequest("spike_adapter_layer", 1, adapter_id)
+            generate_kwargs["lora_request"] = lora_request
+            
+        print(f"⚡ Processing {len(templated_inputs)} prompts in parallel execution...", flush=True)
+        outputs = llm.generate(templated_inputs, sampling_params, **generate_kwargs)
+        
+        for out in outputs:
+            generated_responses.append(out.outputs[0].text.strip())
+            
+    except Exception as e:
+        print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
+        generated_responses = ["" for _ in evaluation_set]
+        
+    finally:
+        print(f"♻️ Evacuating VRAM channels for next model tracking...", flush=True)
+        try:
+            if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
+                llm.llm_engine.engine_core.shutdown()
+        except Exception:
+            pass
+            
+        try:
+            destroy_model_parallel()
+        except Exception:
+            pass
+            
+        if 'llm' in locals():
+            del llm
+        if 'tokenizer' in locals():
+            del tokenizer
+            
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print("✅ VRAM cleared.", flush=True)
+        
+    return generated_responses
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Baseline, Custom LoRA, and Challenger Models emitting structured JSON databases.")
-    parser.add_argument("--base_model", type=str, required=True, help="Path or HF ID of the base model")
-    parser.add_argument("--adapter_path", type=str, required=True, help="Path to the trained LoRA adapter")
-    parser.add_argument("--dataset_path", type=str, required=True, help="Path to the evaluation JSONL dataset")
-    parser.add_argument("--seq_length", type=int, default=16384, help="Context sequence length threshold")
-    parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank")
-    parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSON file")
-    parser.add_argument("--run_id", type=str, required=True, help="ClearML/Pipeline unique run execution identifier")
-    args = parser.parse_args()
+    print("📋 Validating structural configurations...", flush=True)
+    if not os.path.exists("data/system-prompt.md"):
+        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/system-prompt.md' is missing.")
+    if not os.path.exists("data/prompt-template.md"):
+        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/prompt-template.md' is missing.")
 
-    textstat.set_lang("de")
-
-    # Hardware Telemetry Check
-    num_gpus = torch.cuda.device_count()
-    print(f"\n[Hardware Check] Detected {num_gpus} GPU(s).")
-    for i in range(num_gpus):
-        vram = torch.cuda.get_device_properties(i).total_memory / (1024**3)
-        print(f" - GPU {i}: {torch.cuda.get_device_name(i)} ({vram:.1f} GB VRAM)")
-
-    # Read external markdown prompt values dynamically from repository paths
-    repo_root = Path(__file__).resolve().parent.parent
-    system_file = repo_root / "data" / "system-prompt.md"
-    template_file = repo_root / "data" / "prompt-template.md"
-    
-    system_prompt = system_file.read_text(encoding="utf-8").strip() if system_file.exists() else ""
-    template_prompt = template_file.read_text(encoding="utf-8").strip() if template_file.exists() else ""
-
-    print(f"\nLoading dataset from {args.dataset_path}...")
-    with open(args.dataset_path, "r", encoding="utf-8") as f:
-        dataset = [json.loads(line) for line in f if line.strip()]
-    
-    dataset = dataset[:20]
-
-    evaluation_data = []
-    for entry in dataset:
-        messages = entry.get("messages", [])
-        reference_sol = ""
-        input_messages = []
-        original_prompt = ""
+    with open("data/system-prompt.md", "r", encoding="utf-8") as f:
+        global_system_prompt = f.read().strip()
         
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                reference_sol = msg.get("content", "")
-            else:
-                input_messages.append(msg)
-                if msg.get("role") == "user":
-                    original_prompt = msg.get("content", "")
+    with open("data/prompt-template.md", "r", encoding="utf-8") as f:
+        global_template = f.read()
 
-        original_text = entry.get("original_text", original_prompt)            
-        evaluation_data.append({
-            "original": original_text,
-            "reference": reference_sol,
-            "input_messages": input_messages
+    evaluation_set = []
+    
+    # PART 1: APPEND INTEGRITY CHECK PROMPT
+    evaluation_set.append({
+        "is_integrity": True,
+        "original_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
+        "templated_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
+        "system": "Du bist ein hilfreicher Assistent",
+        "reference_text": None
+    })
+    
+    # PART 2: APPEND REGULAR UNTAGGED TEST PROMPTS
+    original_test_prompts = [
+        "Warum ist der Himmel blau und nicht schwarz?",
+        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg. Hausärztinnen haben in der Landeshauptstadt einen Anteil von 77,5 Prozent, wie aus einer Auswertung der Kassenärztlichen Bundesvereinigung (KBV) hervorgeht. Auf Magdeburg folgen in den Top 3 der Ilm-Kreis (76,2 Prozent) und das Altenburger Land (74,1 Prozent) in Thüringen.\n\nIn Sachsen-Anhalt insgesamt liegt der Anteil der Ärztinnen bei 58,7 Prozent und damit im bundesweiten Vergleich recht hoch. Berlin hat den höchsten Ärztinnen-Anteil mit 60,2 Prozent, gefolgt von Hamburg und Sachsen mit je 58,9 Prozent. Schlusslicht ist das Saarland mit 47,5 Prozent."
+    ]
+    
+    for text_block in original_test_prompts:
+        evaluation_set.append({
+            "is_integrity": False,
+            "original_user": text_block,
+            "templated_user": global_template.replace("%INPUT%", text_block),
+            "system": global_system_prompt,
+            "reference_text": None
         })
 
-    # ========================================================
-    # STAGE 1: UNTUNED BASELINE MODEL
-    # ========================================================
-    print(f"\n--- INITIALIZING CORE BASE MODEL CONFIGURATION ---")
-    tokenizer = AutoTokenizer.from_pretrained(args.adapter_path)
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # PART 3: INGEST ADAPTER DATASET FROM JSONL
+    jsonl_path = "data/train/dataset.jsonl"
+    if os.path.exists(jsonl_path):
+        print(f"📥 Parsing tuning records from: {jsonl_path}")
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                prompt_id = str(entry.get("id", "")).strip()
+                if not prompt_id:
+                    raise KeyError(f"❌ Dataset Corruption: Missing 'id' field in {jsonl_path} on line {line_number}.")
+                
+                orig_base_path = f"data/raw/{prompt_id}_Standardsprache"
+                ref_base_path = f"data/raw/{prompt_id}_Leichte_Sprache"
+                
+                orig_content = read_file_with_extensions(orig_base_path)
+                ref_content = read_file_with_extensions(ref_base_path)
+                
+                evaluation_set.append({
+                    "is_integrity": False,
+                    "original_user": orig_content,
+                    "templated_user": global_template.replace("%INPUT%", orig_content),
+                    "system": global_system_prompt,
+                    "reference_text": ref_content
+                })
 
-    formatted_prompts = [
-        tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
-        for data in evaluation_data
-    ]
+    # --- DYNAMIC ADAPTER CHECKPOINT RESOLUTION ---
+    mistral_adapter = "/app/output/adapter/mistral4small"
+    if not os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+        mistral_adapter = "/app/output/adapter/train-mistral4small"
+        
+    gemma_adapter = "/app/output/adapter/gemma4"
+    if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+        gemma_adapter = "/app/output/adapter/train-gemma4"
 
-    args.base_model = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    # REFACTORED MATRIX: Dynamically add baseline and adapter entries side-by-side
+    EVALUATION_PIPELINE = []
 
-    loading_kwargs = get_model_loading_kwargs(args.base_model)
-    base_model = AutoModelForCausalLM.from_pretrained(args.base_model, **loading_kwargs)
+    # A. Mistral Small 4 Matrix Layers
+    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
+    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
+
+    # B. Gemma 4 Matrix Layers
+    EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None))
+    if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+        EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, gemma_adapter))
+
+    # C. Llama 3.1 Schomacker et. al. Challenger
+    EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
-    print(f"\n🚀 Executing native bucket batch generation for Baseline...")
-    baseline_results = generate_batched(base_model, tokenizer, evaluation_data, formatted_prompts, desc="Evaluating Baseline")
-
-    # ========================================================
-    # STAGE 2: TUNED ADAPTER
-    # ========================================================
-    print(f"\n--- ATTACHING ADAPTER VIA PEFT: {args.adapter_path} ---")
-    adapter_model = PeftModel.from_pretrained(base_model, args.adapter_path)
-    
-    print(f"\n🚀 Executing native bucket batch generation for Tuned Adapter...")
-    tuned_results = generate_batched(adapter_model, tokenizer, evaluation_data, formatted_prompts, desc="Evaluating Tuned Adapter")
-
-    print("\n[Wiping Memory for Core Models...]")
-    del adapter_model
-    del base_model
-    del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # ========================================================
-    # STAGE 3: CHALLENGER MODEL
-    # ========================================================
-    print(f"\n--- INITIALIZING CHALLENGER MODEL CONFIGURATION ---")
-    chal_tokenizer = AutoTokenizer.from_pretrained("unsloth/meta-llama-3.1-8b-instruct")
-    chal_tokenizer.padding_side = "left"
-    if chal_tokenizer.pad_token is None:
-        chal_tokenizer.pad_token = chal_tokenizer.eos_token
-
-    chal_formatted_prompts = [
-        chal_tokenizer.apply_chat_template(data["input_messages"], tokenize=False, add_generation_prompt=True)
-        for data in evaluation_data
-    ]
-
-    chal_loading_kwargs = get_model_loading_kwargs(CHALLENGER_BASE)
-    chal_base = AutoModelForCausalLM.from_pretrained(CHALLENGER_BASE, **chal_loading_kwargs)
-    chal_model = PeftModel.from_pretrained(chal_base, CHALLENGER_ADAPTER)
-
-    print(f"\n🚀 Executing native bucket batch generation for Challenger...")
-    challenger_results = generate_batched(chal_model, chal_tokenizer, evaluation_data, chal_formatted_prompts, desc="Evaluating Challenger")
-
-    del chal_model
-    del chal_base
-    del chal_tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # ==========================================
-    # OUTPUT JSON STREAM COMPILATION
-    # ==========================================
-    print(f"\nCompiling structured JSON database...")
-    json_output = {
-        "system": system_prompt,
-        "template": template_prompt,
-        "entries": []
+    output_json = {
+        "system": global_system_prompt,
+        "template": global_template,
+        "models": [],
+        "prompts": []
     }
     
-    for i in range(len(evaluation_data)):
-        data = evaluation_data[i]
-        orig_text = data['original']
-        ref_text = data['reference']
-        base_text = baseline_results[i]
-        tuned_text = tuned_results[i]
-        chal_text = challenger_results[i]
+    for item in evaluation_set:
+        record = {}
+        if item["is_integrity"]:
+            record["system"] = item["system"]
+            record["template"] = ""
+            
+        input_fre, input_wstf = get_raw_metrics(item["original_user"])
+        record["r"] = [[item["original_user"], input_fre, input_wstf]]
+        output_json["prompts"].append(record)
+
+    # Cascade Batch Inference through registered models
+    for model_id, quant_type, max_len, adapter_id in EVALUATION_PIPELINE:
+        display_name = model_id
+        if adapter_id:
+            display_name += f" ({adapter_id})"
+        output_json["models"].append(display_name)
         
-        orig_fre, orig_swtf = get_raw_metrics(orig_text)
-        ref_fre, ref_swtf = get_raw_metrics(ref_text)
-        base_fre, base_swtf = get_raw_metrics(base_text)
-        tuned_fre, tuned_swtf = get_raw_metrics(tuned_text)
-        chal_fre, chal_swtf = get_raw_metrics(chal_text)
+        responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
+        
+        for idx, text_response in enumerate(responses):
+            resp_fre, resp_wstf = get_raw_metrics(text_response)
+            output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf])
 
-        # Matrix array row explicitly augmented with untuned baseline outputs
-        json_output["entries"].append([
-            orig_text, orig_fre, orig_swtf,
-            base_text, base_fre, base_swtf,
-            tuned_text, tuned_fre, tuned_swtf,
-            chal_text, chal_fre, chal_swtf,
-            ref_text, ref_fre, ref_swtf,
-        ])
+    # POST-PROCESSING: Append tuning ground truth references
+    print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
+    for idx, item in enumerate(evaluation_set):
+        if item["reference_text"] is not None:
+            ref_txt = item["reference_text"]
+            ref_fre, ref_wstf = get_raw_metrics(ref_txt)
+            output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
 
-    output_path = Path(args.output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Output Serialization and S3 Upload
+    timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
+    filename = f"evaluation_{timestamp}.json"
+    bucket_name = os.environ.get("S3_BUCKET")
+    json_payload = json.dumps(output_json, ensure_ascii=False, indent=2)
     
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(json_output, f, indent=2, ensure_ascii=False)
-    print(f"Local evaluation file saved to: {output_path}")
-
-    # ==========================================
-    # S3 SYNC AUTOMATION PHASE
-    # ==========================================
-    s3_bucket = os.environ.get("S3_BUCKET")
-    if s3_bucket:
-        s3_bucket = s3_bucket.strip().rstrip("/")
-        s3_destination = f"s3://{s3_bucket}/evaluation_{args.run_id}.json"
-        print(f"\n☁️ Syncing results to cloud storage: {s3_destination} ...")
-        
+    print("\n" + "="*60 + "\n🏁 EVALUATION MATRIX EXPORT\n" + "="*60)
+    if bucket_name:
+        print(f"📤 Exporting matrix results to S3 Bucket: {bucket_name} as {filename}...")
         try:
-            subprocess.run(
-                ["aws", "s3", "cp", str(output_path), s3_destination],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            print("✨ S3 copy operations successfully executed!")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to copy to S3. Error code: {e.returncode}")
-            print(f"Reason: {e.stderr.decode('utf-8').strip()}")
+            s3_client = boto3.client('s3')
+            s3_client.put_object(Bucket=bucket_name, Key=filename, Body=json_payload, ContentType='application/json')
+            print("🚀 S3 Synchronization successful!")
+        except Exception as s3_err:
+            print(f"❌ Failed to transfer to S3 destination: {s3_err}\nSaving local copy as fallback...")
+            with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
     else:
-        print("\nℹ️ Environment variable S3_BUCKET not set. Skipping cloud copy.")
-
-    print("\n=== Evaluation pipeline successfully completed! ===")
+        print("⚠️ S3_BUCKET environment variable missing. Saving locally...")
+        with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
+        print(f"💾 Written to local file system: {filename}")
 
 if __name__ == "__main__":
     main()

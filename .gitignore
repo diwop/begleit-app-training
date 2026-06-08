@@ -36,4 +36,7 @@ venv.bak/
 huggingface/
 
 # Transient configs
-.merged-train.yml
+.merged-train*.yml
+.ds-config-train*.json
+
+.

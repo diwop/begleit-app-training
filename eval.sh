@@ -4,8 +4,8 @@ set -e
 cd /runner/repo/
 
 # Check if both S3 variables are provided
-if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
-    echo "Downloading adapter from s3://${S3_BUCKET}/${S3_ADAPTER}..."
+if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER_RUN:-}" ]; then
+    echo "Downloading adapters from s3://${S3_BUCKET}/${S3_ADAPTER_RUN}..."
 
     uv pip install awscli # make sure aws cli is available
 
@@ -13,7 +13,7 @@ if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER:-}" ]; then
     mkdir -p /app/output/adapter
     
     # Sync the remote S3 folder directly into the local evaluation directory
-    aws s3 sync "s3://${S3_BUCKET}/${S3_ADAPTER}" /app/output/adapter
+    aws s3 sync "s3://${S3_BUCKET}/${S3_ADAPTER_RUN}" /app/output/adapter
     
     echo "✅ Adapter successfully downloaded to /app/output/adapter!"
     echo ""

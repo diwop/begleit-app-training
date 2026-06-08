@@ -1,4 +1,4 @@
-# --- src/orchestrate_train.py ---
+# --- src/launcher.py ---
 import os
 import json
 import time
@@ -63,7 +63,7 @@ def generate_runtime_deepspeed(large: bool, output_json_path: str):
     print(f"✅ DeepSpeed configuration compiled successfully at: {output_json_path}")
     return output_json_path
 
-def run_training_job(config_path: str, num_gpus: int, run_id: str):
+def run_training_job(config_path: str, num_gpus: int, run_id: str, large: bool):
     """
     A modular function that isolates configuration merging, runtime deepspeed building,
     and execution tracking for an individual model training loop run.
@@ -89,8 +89,8 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # Compile and bind the custom DeepSpeed configuration file
-    generate_runtime_deepspeed(base_model_str, runtime_ds_path)
+    # FIXED BUG: Pass the boolean flag 'large' and target file path to generate_runtime_deepspeed
+    generate_runtime_deepspeed(large, runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
     # Save the resolved, finalized configuration path for Axolotl to consume
@@ -147,7 +147,7 @@ def main():
         ["config/train-mistral4small.yml", True]
     ]
     
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
     run_id = f"{timestamp}_run"
     
     # Track output directory paths to synchronize everything to S3 at the end
@@ -156,6 +156,7 @@ def main():
     print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
     
     for config_yaml_path, large in TRAINING_PIPELINE:
+        # FIXED BUG: Correctly pass the large boolean flag to the training job orchestrator
         output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id, large)
         completed_output_dirs.append((output_path, config_yaml_path))
 
@@ -187,7 +188,26 @@ def main():
     else:
         print("\n⚠️ Note: S3_BUCKET environment variable is missing. Skipping final cloud sync phase.")
 
-    print("\n🏁 ALL CONFIGURED PIPELINE TRAINING RUNS COMPLETED SUCCESSFULLY!\n")
+    # -------------------------------------------------------------------------
+    # LAUNCH POST-TRAINING MATRIX EVALUATION PHASE
+    # -------------------------------------------------------------------------
+    print("\n" + "="*60)
+    print("🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE")
+    print("="*60, flush=True)
+    
+    if os.path.exists("src/evaluation.py"):
+        print("Running batch evaluation matrix sequence via evaluation.py...")
+        try:
+            subprocess.run(["python", "src/evaluation.py"], check=True)
+            print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
+        except subprocess.CalledProcessError as e:
+            print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
+            sys.exit(1)
+    else:
+        print("❌ [ERROR] 'src/evaluation.py' script was not found. Bypassing metrics verification.")
+        sys.exit(1)
+
+    print("\n🏁 ALL CONFIGURED PIPELINE TRAINING & EVALUATION RUNS COMPLETED SUCCESSFULLY!\n")
 
 if __name__ == "__main__":
     main()
