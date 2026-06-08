@@ -66,7 +66,12 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "gpu_memory_utilization": 0.82
         }
 
-        llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
+        # Explicitly disable vision modalities for this text-only run.
+        # This prevents the upgraded vLLM engine from injecting mock image tokens 
+        # during startup profiling, clearing the mistral_common validation crash.
+        if "mistral" in model_id.lower():
+            print("🛑 Disabling vision profiling modalities for text-only pipeline...")
+            llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
         
         if adapter_id:
             llm_kwargs["enable_lora"] = True
@@ -217,8 +222,8 @@ def main():
     # 4. Define Pipeline Infrastructure Grid Matrix
     EVALUATION_PIPELINE = [
         ("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None),
-        # ("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None),
-        # ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
+        ("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None),
+        ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
     ]
     
     output_json = {
