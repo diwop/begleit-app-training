@@ -56,10 +56,9 @@ jobs:
       - uses: actions/checkout@v6
       - name: Run Smoke Test in Docker
         run: |
-          BASE_IMAGE="axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1"
+          BASE_IMAGE="axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0"
           echo "Booting $BASE_IMAGE..."
           
-          # We use --entrypoint bash to run a multi-command script inside the container
           # We mount to /app to protect Axolotl's native /workspace!
           docker run --rm \
             -v ${{ github.workspace }}:/app \
@@ -67,14 +66,13 @@ jobs:
             --user root \
             --entrypoint bash \
             $BASE_IMAGE -c "
-            echo 'Installing uv...'
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            export PATH=\"\$HOME/.local/bin:\$PATH\"
+            echo 'Dynamically compiling pyproject.toml blueprints...'
+            uv pip compile pyproject.toml -o requirements.txt
             
-            echo 'Installing dependencies...'
-            uv export --format requirements-txt > requirements.txt
-            uv pip install --system --no-cache -r requirements.txt
+            echo 'Installing evaluation tools directly into Axolotl Master Venv...'
+            # FIXED: Removed --system so uv targets the active /workspace/axolotl-venv layers
+            uv pip install --no-cache -r requirements.txt
             
-            echo 'Executing Smoke Test...'
+            echo 'Executing Version Integrity Smoke Test...'
             python tests/container_smoke_test.py
             "

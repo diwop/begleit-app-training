@@ -7,6 +7,15 @@ from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from vllm.lora.request import LoRARequest # Mandatory for hot-swapping adapters
 from vllm.distributed.parallel_state import destroy_model_parallel
+import textstat
+
+def get_raw_metrics(text: str) -> tuple:
+    """Calculates German textstat metrics and returns rounded raw floats."""
+    if not text.strip():
+        return 0.0, 0.0
+    fre = round(textstat.flesch_reading_ease(text), 1)
+    wstf = round(textstat.wiener_sachtextformel(text, 1), 1)
+    return fre, wstf
 
 def run_model_spike(model_id, quantization_type, max_len=4096, adapter_id=None):
     """
@@ -107,24 +116,24 @@ def main():
     # Expanded Multi-Model Pipeline Sequence Matrix
     # Layout Schema: (HuggingFace Model ID, Quantization Flag, Max Context Length, Optional Adapter ID)
     EVALUATION_PIPELINE = [
-        # (
-        #     "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", 
-        #     "compressed-tensors", 
-        #     4096,
-        #     None  # No adapter required
-        # ),
+        (
+            "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", 
+            "compressed-tensors", 
+            4096,
+            None  # No adapter required
+        ),
         (
             "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
             "compressed-tensors", 
             4096,
             None  # No adapter required
         ),
-        # (
-        #     "meta-llama/Llama-3.1-8B-Instruct", 
-        #     None, # Full unquantized 16-bit precision mode
-        #     4096,
-        #     "tschomacker/lora_adapter_llama_3.1_8B" # Dynamic adapter injection target
-        # )
+        (
+            "meta-llama/Llama-3.1-8B-Instruct", 
+            None, # Full unquantized 16-bit precision mode
+            4096,
+            "tschomacker/lora_adapter_llama_3.1_8B" # Dynamic adapter injection target
+        )
     ]
     
     print(f"🎬 Starting pipeline matrix execution ({len(EVALUATION_PIPELINE)} models registered)...")

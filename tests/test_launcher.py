@@ -99,11 +99,11 @@ CONFIG_TEST_CASES = [
     ),
     (
         "config/train-gemma4.yml", 
-        "google/gemma-4-26B-A4B-it"
+        "unsloth/gemma-4-26B-A4B-it"
     ),
     (
         "config/train-mistral4small.yml", 
-        "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+        "unsloth/Mistral-Small-4-119B-2603"
     ),
 ]
 
