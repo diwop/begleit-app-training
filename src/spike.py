@@ -109,6 +109,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         
         for out in outputs:
             generated_responses.append(out.outputs[0].text.strip())
+            print(out.outputs[0].text.strip())
             
     except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
