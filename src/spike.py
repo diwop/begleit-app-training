@@ -1,49 +1,42 @@
 # --- src/spike.py ---
 import os
+import sys
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
 def main():
-    # 1. Base Spike Parameters
-    MODEL_ID = "TheBloke/Mixtral-8x7B-Instruct-v0.1-AWQ"
+    # 1. Target the 4-bit AWQ quantized Mistral Small 4 flagship model
+    MODEL_ID = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
     SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
     USER_PROMPTS = ["Warum ist der Himmel blau?"]
     
-    print(f"📦 Booting vLLM Engine on top of Axolotl Environment: {MODEL_ID}")
+    print(f"📦 Booting 119B MoE Architecture: {MODEL_ID}", flush=True)
+    print(f"📟 Allocating 128 experts evenly across 2x L40S GPUs...", flush=True)
     
-    # 2. Map Weights Directly Into VRAM Across Both Cards
+    # 2. Configure the Engine for the 60GB Model Footprint
     llm = LLM(
         model=MODEL_ID,
-        # OPTIMIZATION: Upgraded back to Marlin for flawless weight unpacking on Ada Lovelace GPUs
-        quantization="awq_marlin",       
-        tensor_parallel_size=2,   
-        max_model_len=8192, 
+        quantization="awq",           # Matches the 4-bit AWQ weight layout
+        tensor_parallel_size=2,       # Splits the 119B parameter footprint across both cards
+        max_model_len=8192,           # Plenty of context headroom for document digestion
         trust_remote_code=True,
-        disable_custom_all_reduce=True, 
-        # OPTIMIZATION: Keeps CUDA graphs disabled so Marlin will bypass profiling and never freeze
-        enforce_eager=True        
+        disable_custom_all_reduce=True, # Bypasses broken custom peer-to-peer cloud memory links
+        enforce_eager=True,           # Bypasses CUDA graph compilation for direct execution stability
+        gpu_memory_utilization=0.92   # Maximize allocation safety for the KV cache pool
     )
     
-    # 3. Pull Tokenizer to cleanly build Mistral chat structures
+    # 3. Pull the native tokenizer supporting Mistral Small 4 rules
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     
-    # 4. Enforce Token Output Constraints
-    sampling_params = SamplingParams(
-        temperature=0.3,
-        top_p=0.95,
-        max_tokens=256
-    )
-    
-    # 5. Build and format payloads with clear structural role separation
+    # 4. Clean, Native Multi-Role Structural Payloads (No more hacks required!)
     formatted_payloads = []
     for user_query in USER_PROMPTS:
-        # OPTIMIZATION: Inject explicit markdown boundaries within the single turn
-        combined_content = f"System: {SYSTEM_PROMPT}\n\nUser: {user_query}"
-        
         messages = [
-            {"role": "user", "content": combined_content}
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_query}
         ]
         
+        # Mistral Small 4 cleanly wraps system tokens into native structural block boundaries
         full_templated_string = tokenizer.apply_chat_template(
             messages, 
             tokenize=False, 
@@ -51,24 +44,25 @@ def main():
         )
         formatted_payloads.append(full_templated_string)
         
+    sampling_params = SamplingParams(
+        temperature=0.3,
+        top_p=0.95,
+        max_tokens=256
+    )
+    
     print("\n⚡ Processing token generation sequence...", flush=True)
     outputs = llm.generate(formatted_payloads, sampling_params)
     
-    # 6. Output Evaluation Results with Mandatory Stream Flushes
+    # 5. Flush and Output Results
     print("\n===============================================", flush=True)
-    print("🧪 SPIKE SYSTEM RESULTS (FORCED FLUSH)", flush=True)
+    print("🧪 MISTRAL SMALL 4 GENERATION RESULTS", flush=True)
     print("===============================================", flush=True)
     
     for output in outputs:
-        prompt_query = output.prompt
-        generated_text = output.outputs[0].text
+        print(f"Generated Response:\n{output.outputs[0].text.strip()}", flush=True)
         
-        print(f"\nPrompt Context Passed:\n{prompt_query}", flush=True)
-        print(f"\nGenerated Response:\n{generated_text.strip()}", flush=True)
-        
-    print("\n===============================================", flush=True)
+    print("===============================================", flush=True)
     
-    import sys
     sys.stdout.flush()
 
 if __name__ == "__main__":
