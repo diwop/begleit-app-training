@@ -115,7 +115,7 @@ def main():
         # ),
         (
             "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
-            "awq", 
+            "compressed-tensors", 
             4096,
             None  # No adapter required
         ),
