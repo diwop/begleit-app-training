@@ -1,23 +1,28 @@
+# --- base.yml ---
 adapter: qlora
 lora_r: 32
 lora_alpha: 64
 lora_dropout: 0.05
 lora_target_linear: true
 
+# Precision architecture tailored for Ada Lovelace (L40S)
+bf16: true
+fp16: false
+tf32: true
+
 dataset_prepared_path: last_run_prepared
 val_set_size: 0
-output_dir: /app/output/adapter
 
-sequence_len: 16384 # huge documents
-sample_packing: false
+sequence_len: 16384 
+sample_packing: true # CRITICAL: Set to true for 16k context to maximize token throughput per step
 pad_to_sequence_len: false
 
-# default: optimized for multiple 24GB VRAM cards
+# Memory boundaries optimized for 48GB VRAM cards at 16k context
 micro_batch_size: 1
 gradient_accumulation_steps: 8
 
 num_epochs: 3
-optimizer: paged_adamw_8bit # reduces VRAM usage
+optimizer: paged_adamw_8bit # Vital for offloading optimizer states from VRAM
 lr_scheduler: cosine
 learning_rate: 0.0002
 
@@ -26,3 +31,6 @@ gradient_checkpointing_kwargs:
   use_reentrant: false
 
 flash_attention: true
+
+# DeepSpeed activation to split weights and gradients across multiple L40S cards
+deepspeed: /workspace/axolotl/deepspeed_configs/zero3_bf16.json

@@ -1,6 +1,9 @@
-base_model: unsloth/Mistral-Small-4-119B-2603
-unsloth: true
+# --- train-mistral4small.yml ---
+base_model: mistralai/Mistral-Small-4-119B-2603
+unsloth: false
 load_in_4bit: true
+
+output_dir: /app/output/adapter/mistral4small
 
 datasets:
   - path: data/train/dataset.jsonl

@@ -1,6 +1,10 @@
-base_model: unsloth/gemma-4-26B-A4B-it
-unsloth: true
-load_in_4bit: true
+# --- train-gemma4.yml ---
+base_model: google/gemma-4-26b-a4b-it
+unsloth: false # Mandatory for multi-GPU training
+load_in_8bit: true # VRAM is sufficient
+load_in_4bit: false
+
+output_dir: /app/output/adapter/gemma4
 
 datasets:
   - path: data/train/dataset.jsonl

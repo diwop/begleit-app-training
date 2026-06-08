@@ -1,143 +1,194 @@
+# --- src/orchestrate_train.py ---
 import os
+import json
 import time
 import datetime
 import torch
 import subprocess
-import argparse
 import sys
 from omegaconf import OmegaConf
 
 def merge_configs(base_path: str, override_path: str):
-    """
-    Loads and merges a base YAML and an override YAML.
-    Override values take precedence.
-    """
+    """Loads and merges a base YAML and an override YAML. Override values take precedence."""
     base_cfg = OmegaConf.load(base_path)
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to Axolotl YAML config")
-    args = parser.parse_args()
+def generate_runtime_deepspeed(base_model_str: str, output_json_path: str):
+    """
+    Reads the base Axolotl ZeRO-3 template, injects long-prompt activation partitioning,
+    and dynamically applies CPU offloading for large 119B models to prevent OOMs.
+    """
+    source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
+    
+    if os.path.exists(source_ds_path):
+        with open(source_ds_path, "r", encoding="utf-8") as f:
+            ds_dict = json.load(f)
+    else:
+        # Fallback hardcoded blueprint if the native file is absent
+        ds_dict = {
+            "bf16": {"enabled": True},
+            "zero_optimization": {
+                "stage": 3,
+                "offload_optimizer": {"device": "none"},
+                "offload_param": {"device": "none"},
+                "overlap_comm": True,
+                "contiguous_gradients": True,
+                "reduce_bucket_size": "auto",
+                "stage3_prefetch_bucket_size": "auto"
+            }
+        }
 
-    # Apply the memory fragmentation fix globally inside the script
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    # Inject Activation Partitioning (Crucial to process 10k+ token sequences)
+    ds_dict["activation_checkpointing"] = {
+        "partition_activations": True,
+        "contiguous_memory_optimization": True,
+        "cpu_checkpointing": False
+    }
 
-    # Detect the GPUs and their VRAM
-    if not torch.cuda.is_available():
-        print("ERROR: No CUDA GPUs detected!")
-        sys.exit(1)
+    # Apply Conditional CPU Offloading for Mistral Small 119B
+    is_mistral_119b = "mistral" in base_model_str.lower() and "119b" in base_model_str.lower()
+    if is_mistral_119b:
+        print("⚙️ [DeepSpeed Engine] Massive 119B architecture identified. Activating CPU Optimizer Offloading...")
+        ds_dict["zero_optimization"]["offload_optimizer"] = {
+            "device": "cpu",
+            "pin_memory": True
+        }
+    else:
+        print("⚙️ [DeepSpeed Engine] Standard 26B architecture identified. Maximizing VRAM execution speed...")
+        ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
 
-    num_gpus = torch.cuda.device_count()
-    vram_bytes = torch.cuda.get_device_properties(0).total_memory
-    vram_gb = vram_bytes / (1024**3)
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(ds_dict, f, indent=2)
+        
+    print(f"✅ DeepSpeed configuration compiled successfully at: {output_json_path}")
+    return output_json_path
 
-    print(f"\n[Hardware Detected] {num_gpus} GPUs | ~{vram_gb:.1f} GB VRAM per GPU\n")
+def run_training_job(config_path: str, num_gpus: int, run_id: str):
+    """
+    A modular function that isolates configuration merging, runtime deepspeed building,
+    and execution tracking for an individual model training loop run.
+    """
+    print("\n" + "="*60)
+    print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
+    print("="*60, flush=True)
 
-    # Merge the selected config file with the base
-    merged_cfg = merge_configs("config/base.yml", args.config)
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"❌ Target training configuration file missing: '{config_path}'")
 
-    # Save the finalized, resolved config for Axolotl to read
-    temp_config_path = ".merged-train.yml"
-    OmegaConf.save(config=merged_cfg, f=temp_config_path)
+    # 1. Merge selected target configuration with base parameters
+    merged_cfg = merge_configs("config/base.yml", config_path)
+    base_model_str = str(merged_cfg.get("base_model", ""))
 
-    # Extract configuration variables early to use in our skip logic
-    output_dir = str(merged_cfg.get("output_dir", "/workspace/output"))
-    seq_len = str(merged_cfg.get("sequence_len", 2048))
-    lora_rank = str(merged_cfg.get("lora_r", 64))
+    # Unique filenames to prevent overlapping cache clashes inside sequential cycles
+    config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
+    temp_yaml_path = f".merged-{config_filename}.yml"
+    runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    # --- CONDITIONAL TRAINING LOGIC ---
+    # 2. Enforce long-prompt safety overrides directly to the configuration block
+    merged_cfg["micro_batch_size"] = 1
+    merged_cfg["gradient_accumulation_steps"] = 8
+    merged_cfg["sample_packing"] = True
+    
+    # Compile and bind the custom DeepSpeed configuration file
+    generate_runtime_deepspeed(base_model_str, runtime_ds_path)
+    merged_cfg["deepspeed"] = runtime_ds_path
+
+    # Save the resolved, finalized configuration path for Axolotl to consume
+    OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
+
+    output_dir = str(merged_cfg.get("output_dir", f"/app/output/adapter/{config_filename}"))
     is_eval_mode = os.environ.get("EVAL", "false").lower() == "true"
     adapter_exists = os.path.exists(os.path.join(output_dir, "adapter_config.json"))
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"{timestamp}_run"
-
     if is_eval_mode and adapter_exists:
-        print(f"\n[SKIP] EVAL=true detected and adapter found at '{output_dir}'. Bypassing training phase.")
-    else:
-        if is_eval_mode and not adapter_exists:
-            print(f"\n[WARNING] EVAL=true is set, but no valid adapter was found at '{output_dir}'. Proceeding with training!")
+        print(f"\n[SKIP] EVAL=true and valid adapter discovered at '{output_dir}'. Bypassing training pass.")
+        return output_dir, merged_cfg
 
-        # Construct the base command for the training
-        cmd = [
-            "accelerate", "launch",
-            "--num_processes", str(num_gpus),
-            "-m", "axolotl.cli.train",
-            ".merged-train.yml"
-        ]
+    if is_eval_mode and not adapter_exists:
+        print(f"\n[WARNING] EVAL=true is set, but no adapter was found at '{output_dir}'. Commencing training...")
 
-        # Add overrides based on VRAM
-        if vram_gb < 30:
-            print("[Override] <30GB VRAM detected. Injecting safety limits...")
-            cmd.extend([
-                "--micro_batch_size", "1",
-                "--gradient_accumulation_steps", "8"
-            ])
-        else:
-            print("[Override] >30GB VRAM detected. Optimizing for high-throughput...")
-            cmd.extend([
-                "--micro_batch_size", "4",
-                "--gradient_accumulation_steps", "2"
-            ])
-
-        # Add DeepSpeed toggle based on GPU count
-        if num_gpus > 1:
-            print("[Override] Multiple GPUs detected. Injecting DeepSpeed ZeRO-3...")
-            cmd.extend(["--deepspeed", "config/zero3.json"])
-        else:
-            print("[Override] Single GPU detected. Running native PyTorch (No DeepSpeed).")
-
-        # Execute Training
-        print(f"\nExecuting: {' '.join(cmd)}\n")
-        try:
-            subprocess.run(cmd, check=True)
-            print("\n[Success] Training completed successfully!")
-            
-            s3_bucket = os.environ.get("S3_BUCKET", "")
-            if s3_bucket:
-                print(f"\nS3_BUCKET '{s3_bucket}' configured. Backing up adapter and checkpoints...")
-                s3_target = f"s3://{s3_bucket}/{run_id}"
-                
-                try:
-                    # Sync the entire output directory recursively
-                    print(f"Syncing local {output_dir} -> {s3_target} ...")
-                    subprocess.run(["aws", "s3", "sync", output_dir, s3_target], check=True)
-                    print("=== S3 Backup Successful! ===")
-                    
-                except subprocess.CalledProcessError as e:
-                    print(f"=== WARNING: S3 Backup Failed with exit code {e.returncode}! ===")
-                    print("Sleeping for 60 seconds to allow manual debugging before continuing...")
-                    time.sleep(60)
-
-        except subprocess.CalledProcessError as e:
-            print(f"\n[FATAL ERROR] Training failed with exit code {e.returncode}")
-            sys.exit(1)
-
-    # --- EVALUATION LOGIC ---
-    print("\nStarting post-training evaluation...")
-    
-    os.makedirs(output_dir, exist_ok=True)
-
-    eval_cmd = [
-        "python", "src/evaluation.py",
-        "--base_model", str(merged_cfg.get("base_model")),
-        "--adapter_path", output_dir,
-        "--dataset_path", str(merged_cfg.datasets[0].path),
-        "--seq_length", seq_len,
-        "--lora_rank", lora_rank,
-        "--output_file", f"{output_dir}/evaluation_results.md",
-        "--run_id", run_id
+    # 3. Formulate the multi-GPU launch execution array command
+    cmd = [
+        "accelerate", "launch",
+        "--multi_gpu",
+        "--num_machines", "1",
+        "--num_processes", str(num_gpus),
+        "-m", "axolotl.cli.train",
+        temp_yaml_path
     ]
 
-    print(f"Executing Evaluation: {' '.join(eval_cmd)}\n")
+    print(f"\n🚀 Launching Axolotl Training Engine:\n{' '.join(cmd)}\n", flush=True)
     try:
-        subprocess.run(eval_cmd, check=True)
-        print(f"\n[Success] Pipeline finished! Results saved to {output_dir}/evaluation_results.md")
+        subprocess.run(cmd, check=True)
+        print(f"\n🎉 [Success] Job completed successfully for {config_path}!")
+        return output_dir, merged_cfg
     except subprocess.CalledProcessError as e:
-        print(f"\n[ERROR] Evaluation failed with exit code {e.returncode}")
-        sys.exit(1)        
+        print(f"\n❌ [FATAL ERROR] Axolotl core process crashed on {config_path} with exit code {e.returncode}")
+        sys.exit(1)
+
+def main():
+    # Apply memory segmentation allocations globally before execution hooks begin
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+    if not torch.cuda.is_available():
+        print("❌ ERROR: No CUDA devices identified on the host cluster!")
+        sys.exit(1)
+
+    num_gpus = torch.cuda.device_count()
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
+
+    # -------------------------------------------------------------------------
+    # THE SEQUENTIAL TRAINING PIPELINE MATRIX
+    # Register your training configurations here to step through them in a loop
+    # -------------------------------------------------------------------------
+    TRAINING_PIPELINE = [
+        "config/train-gemma4.yml",
+        "config/train-mistral4small.yml"
+    ]
+    
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{timestamp}_run"
+    
+    # Track output directory paths to synchronize everything to S3 at the end
+    completed_output_dirs = []
+
+    print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
+    
+    for config_yaml_path in TRAINING_PIPELINE:
+        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
+        completed_output_dirs.append((output_path, config_yaml_path))
+
+    # -------------------------------------------------------------------------
+    # FINALIZATION: BULK CLOUD SYNCHRONIZATION TO AWS S3
+    # -------------------------------------------------------------------------
+    s3_bucket = os.environ.get("S3_BUCKET", "")
+    if s3_bucket:
+        print("\n" + "="*60)
+        print("📤 INITIATING MASTER CLOUD SYNCHRONIZATION TO S3")
+        print("="*60, flush=True)
+        
+        for output_dir, config_path in completed_output_dirs:
+            if os.path.exists(os.path.join(output_dir, "adapter_config.json")):
+                # Extract the final sub-folder directory name to keep your bucket clean
+                model_target_dirname = os.path.basename(os.path.normpath(output_dir))
+                s3_target = f"s3://{s3_bucket}/{run_id}/{model_target_dirname}"
+                
+                print(f"Syncing directory: {output_dir} -> {s3_target} ...", flush=True)
+                try:
+                    subprocess.run(["aws", "s3", "sync", output_dir, s3_target], check=True)
+                    print(f"✅ Synchronization successful for {model_target_dirname}!")
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠️ [WARNING] S3 Sync failed for {output_dir} with exit code {e.returncode}!")
+                    print("Pausing script for 60 seconds to allow for manual cluster debugging...")
+                    time.sleep(60)
+            else:
+                print(f"ℹ️ Skipping S3 sync for '{output_dir}' - No valid adapter assets found.")
+    else:
+        print("\n⚠️ Note: S3_BUCKET environment variable is missing. Skipping final cloud sync phase.")
+
+    print("\n🏁 ALL CONFIGURED PIPELINE TRAINING RUNS COMPLETED SUCCESSFULLY!\n")
 
 if __name__ == "__main__":
     main()
