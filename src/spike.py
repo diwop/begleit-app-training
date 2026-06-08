@@ -22,13 +22,21 @@ def get_raw_metrics(text: str) -> tuple:
     return fre, wstf
 
 def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) -> str:
-    """Checks for the existence of a file across multiple extensions and returns content."""
+    """
+    Checks for the existence of a file across multiple extensions.
+    CRITICAL: Raises FileNotFoundError if no matching file is found.
+    """
     for ext in extensions:
         full_path = f"{base_path_str}{ext}"
         if os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 return f.read().strip()
-    return ""
+                
+    # Crash immediately if the required raw text or markdown component is missing
+    raise FileNotFoundError(
+        f"❌ Data Integrity Violation: Required file not found for base path '{base_path_str}' "
+        f"with extensions {extensions}."
+    )
 
 def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
     """
@@ -47,28 +55,24 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     generated_responses = []
     
     try:
-        # 1. Build Base Configuration Arguments
         llm_kwargs = {
             "model": model_id,
             "quantization": quantization_type,
-            "tensor_parallel_size": 2,          # Slices layers across both L40S cards
-            "max_model_len": max_len,           # Overhead for heavy text context blocks
+            "tensor_parallel_size": 2,
+            "max_model_len": max_len,
             "trust_remote_code": True,
-            "disable_custom_all_reduce": True,  # Fix for virtualized network deadlocks
-            "enforce_eager": True,              # Bypass for graph compilation deadlocks
-            "gpu_memory_utilization": 0.82      # Mitigates memory fragmentation across steps
+            "disable_custom_all_reduce": True,
+            "enforce_eager": True,
+            "gpu_memory_utilization": 0.82
         }
         
-        # 2. Dynamically allocate LoRA matrix space only if an adapter is passed
         if adapter_id:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_loras"] = 1
             
-        # Initialize engine and tokenizer
         llm = LLM(**llm_kwargs)
         tokenizer = AutoTokenizer.from_pretrained(model_id)
         
-        # 3. Apply Chat Templates across the entire evaluation sequence
         templated_inputs = []
         for prompt_item in evaluation_set:
             messages = [
@@ -82,11 +86,10 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             )
             templated_inputs.append(full_string)
             
-        # 4. Generate Batched Responses (Silent Collection)
         sampling_params = SamplingParams(
             temperature=0.3,
             top_p=0.95,
-            max_tokens=4096 # Sized safely to fit cleanly within maximum context lengths
+            max_tokens=4096
         )
         
         generate_kwargs = {}
@@ -97,17 +100,14 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         print(f"⚡ Processing {len(templated_inputs)} prompts in parallel execution...", flush=True)
         outputs = llm.generate(templated_inputs, sampling_params, **generate_kwargs)
         
-        # Collect results sequentially
         for out in outputs:
             generated_responses.append(out.outputs[0].text.strip())
             
     except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
-        # Populate empty fallbacks on failure to maintain matrix alignment
         generated_responses = ["" for _ in evaluation_set]
         
     finally:
-        # 5. Evacuate engine instances from the active VRAM pool
         print(f"♻️ Evacuating VRAM channels for next model tracking...", flush=True)
         try:
             if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
@@ -133,27 +133,20 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     return generated_responses
 
 def main():
-    # 1. Load System Prompts and Data Blueprints (with fallback defaults)
-    os.makedirs("data/train", exist_ok=True)
-    os.makedirs("data/raw", exist_ok=True)
+    print("📋 Validating structural configurations...", flush=True)
     
-    try:
-        with open("data/system-prompt.md", "r", encoding="utf-8") as f:
-            global_system_prompt = f.read().strip()
-    except FileNotFoundError:
-        global_system_prompt = "Du bist ein hilfreicher Assistent."
-        with open("data/system-prompt.md", "w", encoding="utf-8") as f:
-            f.write(global_system_prompt)
-            
-    try:
-        with open("data/prompt-template.md", "r", encoding="utf-8") as f:
-            global_template = f.read()
-    except FileNotFoundError:
-        global_template = "Hier ist der Text:\n\n%INPUT%"
-        with open("data/prompt-template.md", "w", encoding="utf-8") as f:
-            f.write(global_template)
+    # CRITICAL: Enforce strict existence of system blueprints (No fallbacks!)
+    if not os.path.exists("data/system-prompt.md"):
+        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/system-prompt.md' is missing.")
+    if not os.path.exists("data/prompt-template.md"):
+        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/prompt-template.md' is missing.")
 
-    # Internal Structured Tracking Master Matrix List
+    with open("data/system-prompt.md", "r", encoding="utf-8") as f:
+        global_system_prompt = f.read().strip()
+        
+    with open("data/prompt-template.md", "r", encoding="utf-8") as f:
+        global_template = f.read()
+
     evaluation_set = []
     
     # -------------------------------------------------------------------------
@@ -172,7 +165,7 @@ def main():
     # -------------------------------------------------------------------------
     original_test_prompts = [
         "Warum ist der Himmel blau und nicht schwarz?",
-        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg. Hausärztinnen haben in der Landeshauptstadt einen Anteil von 77,5 Prozent, wie aus einer Auswertung der Kassenärztlichen Bundesvereinigung (KBV) hervorgeht. Auf Magdeburg folgen in den Top 3 der Ilm-Kreis (76,2 Prozent) und das Altenburger Land (74,1 Prozent) in Thüringen.\n\nIn Sachsen-Anhalt insgesamt liegt der Anteil der Ärztinnen bei 58,7 Prozent und damit im bundesweiten Vergleich recht hoch. Berlin hat den höchsten Ärztinnen-Anteil mit 60,2 Prozent, gefolgt von Hamburg und Sachsen mit je 58,9 Prozent. Schlusslicht ist das Saarland mit 47,5 Prozent."
+        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg. Hausärztinnen haben in der Landeshauptstadt einen Anteil von 77,5 Prozent, wie aus einer Auswertung der Kassenärztlichen Bundesvereinigung (KBV) hervorgeht. Auf Magdeburg folgen in den Top 3 der Ilm-Kreis (76,2 Prozent) und das Altenburger Land (74,1 Prozent) in Thüringen.\n\nIn Sachsen-Anhalt insgesamt liegt der Anteil der Ärztinnen bei 58,7 Prozent und damit im bundesweiten Vergleich recht hoch. Berlin hat den höchsten Ärztinnen-Anteil with 60,2 Prozent, gefolgt von Hamburg und Sachsen mit je 58,9 Prozent. Schlusslicht ist das Saarland mit 47,5 Prozent."
     ]
     
     for text_block in original_test_prompts:
@@ -185,38 +178,38 @@ def main():
         })
 
     # -------------------------------------------------------------------------
-    # PART 3: DYNAMICALLY INGEST ADAPTER DATASET FROM JSONL
+    # PART 3: INGEST ADAPTER DATASET FROM JSONL (WITH STRICT FILE ENFORCEMENT)
     # -------------------------------------------------------------------------
     jsonl_path = "data/train/dataset.jsonl"
     if os.path.exists(jsonl_path):
-        print(f"📥 Parsing active tuning records from: {jsonl_path}")
+        print(f"📥 Parsing tuning records from: {jsonl_path}")
         with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_number, line in enumerate(f, 1):
                 if not line.strip():
                     continue
-                try:
-                    entry = json.loads(line)
-                    prompt_id = str(entry.get("id", "")).strip()
-                    if prompt_id:
-                        orig_base_path = f"data/raw/{prompt_id}_Standardsprache"
-                        ref_base_path = f"data/raw/{prompt_id}_Leichte_Sprache"
-                        
-                        # Dynamically resolve whether file exists as .txt or .md
-                        orig_content = read_file_with_extensions(orig_base_path)
-                        ref_content = read_file_with_extensions(ref_base_path)
-                        
-                        if orig_content:
-                            evaluation_set.append({
-                                "is_integrity": False,
-                                "original_user": orig_content,
-                                "templated_user": global_template.replace("%INPUT%", orig_content),
-                                "system": global_system_prompt,
-                                "reference_text": ref_content if ref_content else None
-                            })
-                except Exception as jsonl_err:
-                    print(f"⚠️ Warning skipping malformed JSONL line entry: {jsonl_err}")
+                
+                entry = json.loads(line)
+                prompt_id = str(entry.get("id", "")).strip()
+                
+                if not prompt_id:
+                    raise KeyError(f"❌ Dataset Corruption: Missing 'id' field in {jsonl_path} on line {line_number}.")
+                
+                orig_base_path = f"data/raw/{prompt_id}_Standardsprache"
+                ref_base_path = f"data/raw/{prompt_id}_Leichte_Sprache"
+                
+                # These operations will now crash the script natively if files are missing (.txt or .md)
+                orig_content = read_file_with_extensions(orig_base_path)
+                ref_content = read_file_with_extensions(ref_base_path)
+                
+                evaluation_set.append({
+                    "is_integrity": False,
+                    "original_user": orig_content,
+                    "templated_user": global_template.replace("%INPUT%", orig_content),
+                    "system": global_system_prompt,
+                    "reference_text": ref_content
+                })
     else:
-        print(f"ℹ️ Storage path '{jsonl_path}' not found. Skipping dynamic dataset block additions.")
+        print(f"ℹ️ Note: '{jsonl_path}' not present. Proceeding with static pipeline evaluation targets only.")
 
     # 4. Define Pipeline Infrastructure Grid Matrix
     EVALUATION_PIPELINE = [
@@ -225,7 +218,6 @@ def main():
         ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
     ]
     
-    # Initialize Master Output Dictionary Target Architecture
     output_json = {
         "system": global_system_prompt,
         "template": global_template,
@@ -240,7 +232,6 @@ def main():
             record["system"] = item["system"]
             record["template"] = ""
             
-        # Initial tuple configuration: [Original Input Text, FRE, WSTF]
         input_fre, input_wstf = get_raw_metrics(item["original_user"])
         record["r"] = [
             [item["original_user"], input_fre, input_wstf]
@@ -254,10 +245,8 @@ def main():
             display_name += f" ({adapter_id})"
         output_json["models"].append(display_name)
         
-        # Fetch responses silently for all items in batch
         responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
         
-        # Compute metrics for text answers and log to record matrix cells
         for idx, text_response in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
             output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf])
@@ -265,12 +254,11 @@ def main():
     # -------------------------------------------------------------------------
     # PART 4: POST-PROCESSING - BOLT ON TUNING GROUND TRUTH REFERENCES
     # -------------------------------------------------------------------------
-    print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
+    print("\n\n📝 Appending ground-truth training references to dataset records...", flush=True)
     for idx, item in enumerate(evaluation_set):
         if item["reference_text"] is not None:
             ref_txt = item["reference_text"]
             ref_fre, ref_wstf = get_raw_metrics(ref_txt)
-            # Appends the reference tuple directly behind the final model evaluation position
             output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
 
     # 6. Output Serialization and S3 Shipments
