@@ -19,7 +19,7 @@ uv pip uninstall vllm flashinfer-python flashinfer-cubin compressed-tensors tile
 # 3. Create the temporary override directive for Torch
 echo "torch==$SYSTEM_TORCH" > /tmp/overrides.txt
 
-# 4. Fetch the official unified CUDA 12 (+cu129) release wheel
+# 4. Fetch the official unified CUDA 12 release wheel (+cu129)
 VLLM_VERSION="0.22.1"
 echo "📥 Downloading unified CUDA 12 wheel (v$VLLM_VERSION)..."
 uv pip install \
