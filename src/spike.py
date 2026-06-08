@@ -47,7 +47,7 @@ def run_model_spike(model_id, quantization_type, max_len=4096):
         sampling_params = SamplingParams(
             temperature=0.3,
             top_p=0.95,
-            max_tokens=150
+            max_tokens=4096
         )
         
         print(f"\n⚡ Processing token generation loop...", flush=True)
