@@ -39,18 +39,16 @@ def pre_download_models(pipeline_configs):
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"❌ Configuration matrix error: Target file missing '{config_path}'")
             
-        # Extract base model identifier cleanly
         merged_cfg = merge_configs("config/base.yml", config_path)
         base_model_str = str(merged_cfg.get("base_model", "")).strip()
         
         if base_model_str and base_model_str not in processed_models:
             print(f"📦 Verifying local file mapping for: '{base_model_str}'...", flush=True)
             try:
-                # Triggers explicit snapshot download using public pypi hub clients
                 snapshot_download(
                     repo_id=base_model_str,
                     token=token,
-                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.pt"] # Strip alternate formats to save disk space
+                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.pt"]
                 )
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
                 processed_models.add(base_model_str)
@@ -72,7 +70,7 @@ def generate_runtime_deepspeed(output_json_path: str):
         with open(source_ds_path, "r", encoding="utf-8") as f:
             ds_dict = json.load(f)
     else:
-        # Fallback hardcoded blueprint if the native file is absent
+        # Fallback blueprint if the native template is absent
         ds_dict = {
             "bf16": {"enabled": True},
             "zero_optimization": {
@@ -106,46 +104,29 @@ def generate_runtime_deepspeed(output_json_path: str):
 
 def run_training_job(config_path: str, num_gpus: int, run_id: str):
     """
-    Isolates configuration merging, dynamic deepspeed building,
-    and execution tracking for an individual model training run.
+    Loads YAML parameters, binds the DeepSpeed profile, and launches the execution engine.
     """
     print("\n" + "="*60)
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
     print("="*60, flush=True)
 
-    # Merge selected target configuration with base parameters
+    # Merge target YAML parameters
     merged_cfg = merge_configs("config/base.yml", config_path)
 
-    # Unique filenames to prevent overlapping cache clashes inside sequential cycles
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    # Enforce long-prompt safety overrides directly to the configuration block
+    # Enforce long-prompt parameters directly
     merged_cfg["micro_batch_size"] = 1
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # -------------------------------------------------------------------------
-    # AUTOMATED ARCHITECTURE ROUTING LAYER
-    # -------------------------------------------------------------------------
-    if "gemma" in config_path.lower():
-        print("💡 Gemma 4 (26B) detected: Overriding to native unquantized bfloat16 base + Stage 3 LoRA...")
-        merged_cfg["load_in_8bit"] = False
-        merged_cfg["load_in_4bit"] = False
-        merged_cfg["qlora_sharded_model_loading"] = False
-    else:
-        print("💡 Mistral Small 4 (119B) detected: Model is natively pre-quantized in FP8!")
-        print("🚀 Disabling conflicting BitsAndBytes rules to allow direct native loading under Stage 3 sharding...")
-        merged_cfg["load_in_8bit"] = False
-        merged_cfg["load_in_4bit"] = False
-        merged_cfg["qlora_sharded_model_loading"] = False
-
-    # Generate and link the unified VRAM-centric DeepSpeed configuration file
+    # Link the compiled Stage 3 DeepSpeed configuration
     generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
-    # Save the resolved, finalized configuration path for Axolotl to consume
+    # Save the finalized temporary configuration file
     OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
 
     output_dir = str(merged_cfg.get("output_dir", f"/app/output/adapter/{config_filename}"))
@@ -156,10 +137,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         print(f"\n[SKIP] EVAL=true and valid adapter discovered at '{output_dir}'. Bypassing training pass.")
         return output_dir, merged_cfg
 
-    if is_eval_mode and not adapter_exists:
-        print(f"\n[WARNING] EVAL=true is set, but no adapter was found at '{output_dir}'. Commencing training...")
-
-    # Formulate the multi-GPU launch execution array command
+    # Formulate the multi-GPU launch execution command
     cmd = [
         "accelerate", "launch",
         "--multi_gpu",
@@ -179,13 +157,11 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         sys.exit(1)
 
 def main():
-    # Apply memory segmentation allocations globally before execution hooks begin
+    # Apply memory allocations globally
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
-
-    # FORCE COOLDOWN: Deactivate the experimental vLLM V1 graph compiler for child evaluation tasks
     os.environ["VLLM_USE_V1"] = "0"
 
-    # Enforce homogeneous communication paths across the 4x L40S cluster nodes.
+    # Enforce homogeneous communication paths to prevent topology locks
     print("🛡️  Enforcing uniform NCCL distributed communication transport paths...")
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
@@ -198,21 +174,15 @@ def main():
     vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
-    # -------------------------------------------------------------------------
-    # THE SEQUENTIAL TRAINING PIPELINE MATRIX
-    # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
-        # "config/train-gemma4.yml",
+        "config/train-gemma4.yml",
         "config/train-mistral4small.yml"
     ]
     
-    # --- PHASE 0: EXECUTE SINGLE PROCESS SAFE PRE-DOWNLOAD ON DEMAND ---
     pre_download_models(TRAINING_PIPELINE)
     
-    # Generate runtime tracking context metrics
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
-    
     completed_output_dirs = []
 
     print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
@@ -221,9 +191,7 @@ def main():
         output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
         completed_output_dirs.append((output_path, config_yaml_path))
 
-    # -------------------------------------------------------------------------
-    # FINALIZATION: BULK CLOUD SYNCHRONIZATION TO AWS S3
-    # -------------------------------------------------------------------------
+    # Cloud Sync Layer
     s3_bucket = os.environ.get("S3_BUCKET", "")
     if s3_bucket:
         print("\n" + "="*60 + "\n📤 INITIATING MASTER CLOUD SYNCHRONIZATION TO S3\n" + "="*60, flush=True)
@@ -231,7 +199,6 @@ def main():
             if os.path.exists(os.path.join(output_dir, "adapter_config.json")):
                 model_target_dirname = os.path.basename(os.path.normpath(output_dir))
                 s3_target = f"s3://{s3_bucket}/{run_id}/{model_target_dirname}"
-                
                 print(f"Syncing directory: {output_dir} -> {s3_target} ...", flush=True)
                 try:
                     subprocess.run(["aws", "s3", "sync", output_dir, s3_target], check=True)
@@ -239,28 +206,16 @@ def main():
                 except subprocess.CalledProcessError as e:
                     print(f"⚠️ [WARNING] S3 Sync failed for {output_dir} with exit code {e.returncode}!")
                     time.sleep(60)
-            else:
-                print(f"ℹ️ Skipping S3 sync for '{output_dir}' - No valid adapter assets found.")
-    else:
-        print("\n⚠️ Note: S3_BUCKET environment variable is missing. Skipping final cloud sync phase.")
 
-    # -------------------------------------------------------------------------
-    # LAUNCH POST-TRAINING MATRIX EVALUATION PHASE
-    # -------------------------------------------------------------------------
+    # Evaluation Layer
     print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
     if os.path.exists("src/evaluation.py"):
-        print("Running batch evaluation matrix sequence via evaluation.py...")
         try:
             subprocess.run(["python", "src/evaluation.py"], check=True)
             print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
         except subprocess.CalledProcessError as e:
-            print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
+            print(f"\n❌ [ERROR] Evaluation phase terminated with exit code {e.returncode}")
             sys.exit(1)
-    else:
-        print("❌ [ERROR] 'src/evaluation.py' script was not found. Bypassing metrics verification.")
-        sys.exit(1)
-
-    print("\n🏁 ALL CONFIGURED PIPELINE TRAINING & EVALUATION RUNS COMPLETED SUCCESSFULLY!\n")
 
 if __name__ == "__main__":
     main()

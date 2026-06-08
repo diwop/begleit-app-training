@@ -1,13 +1,17 @@
-# --- train-mistral4small.yml ---
+# --- config/train-mistral4small.yml ---
 base_model: mistralai/Mistral-Small-4-119B-2603
-unsloth: false
-load_in_4bit: true
 
-output_dir: /app/output/adapter/mistral4small
+# Set to lora to bypass the Pydantic validator's 4-bit check
+adapter: lora
+
+load_in_8bit: false
+load_in_4bit: false                # Disabled: Model is already pre-quantized in FP8
+qlora_sharded_model_loading: false # Disabled: Let ZeRO-3 shard the native FP8 weights
 
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template
+    chat_template: tokenizer_default
     field_messages: messages
     message_property_mappings:
       role: role
