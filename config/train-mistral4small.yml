@@ -2,11 +2,6 @@ base_model: unsloth/Mistral-Small-4-119B-2603
 unsloth: true
 load_in_4bit: true
 
-# Explicitly configure Axolotl to the custom chat template below
-# into the final adapter's tokenizer_config.json so vLLM can use it.
-chat_template: jinja
-chat_template_jinja: "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'system' %}{{ '[INST] ' + message['content'] + '\n\n' }}{% elif message['role'] == 'user' %}{{ message['content'] + ' [/INST] ' }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}{% endif %}{% endfor %}"
-
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template

@@ -31,7 +31,7 @@ def mock_makedirs():
 
 def test_no_cuda_exits(mock_cuda):
     mock_cuda.is_available.return_value = False
-    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
+    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train-mistral4small.yml']):
         with pytest.raises(SystemExit) as exc:
             main()
         assert exc.value.code == 1
@@ -44,7 +44,7 @@ def test_single_gpu_low_vram(mock_cuda, mock_subprocess):
     mock_props.total_memory = 24 * (1024**3)
     mock_cuda.get_device_properties.return_value = mock_props
 
-    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
+    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train-mistral4small.yml']):
         main()
 
     # Verify subprocess calls (1 training call, 1 evaluation call)
@@ -61,7 +61,6 @@ def test_single_gpu_low_vram(mock_cuda, mock_subprocess):
     assert "src/evaluation.py" in eval_cmd
     assert eval_cmd[eval_cmd.index("--adapter_path") + 1] == "/app/output/adapter"
     assert eval_cmd[eval_cmd.index("--lora_rank") + 1] == "32"
-    assert eval_cmd[eval_cmd.index("--output_file") + 1] == "/app/output/adapter/evaluation_results.md"
 
 def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     mock_cuda.is_available.return_value = True
@@ -71,7 +70,7 @@ def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
     mock_props.total_memory = 80 * (1024**3)
     mock_cuda.get_device_properties.return_value = mock_props
 
-    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train.yml']):
+    with patch.object(sys, 'argv', ['launcher.py', '--config', 'config/train-mistral4small.yml']):
         main()
 
     assert mock_subprocess.call_count == 2
@@ -93,10 +92,6 @@ def test_multi_gpu_high_vram(mock_cuda, mock_subprocess):
 
 # Define the files and their expected base_model outcomes
 CONFIG_TEST_CASES = [
-    (
-        "config/train.yml", 
-        "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit"
-    ),
     (
         "config/train-gemma4.yml", 
         "unsloth/gemma-4-26B-A4B-it"

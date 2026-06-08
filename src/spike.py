@@ -4,6 +4,7 @@ import gc
 import sys
 import json
 from datetime import datetime
+from pathlib import Path
 import torch
 import boto3
 from vllm import LLM, SamplingParams
@@ -19,6 +20,15 @@ def get_raw_metrics(text: str) -> tuple:
     fre = round(textstat.flesch_reading_ease(text), 1)
     wstf = round(textstat.wiener_sachtextformel(text, 1), 1)
     return fre, wstf
+
+def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) -> str:
+    """Checks for the existence of a file across multiple extensions and returns content."""
+    for ext in extensions:
+        full_path = f"{base_path_str}{ext}"
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    return ""
 
 def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
     """
@@ -42,7 +52,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "model": model_id,
             "quantization": quantization_type,
             "tensor_parallel_size": 2,          # Slices layers across both L40S cards
-            "max_model_len": max_len,           # Expanded to 8192 for input/output headroom
+            "max_model_len": max_len,           # Overhead for heavy text context blocks
             "trust_remote_code": True,
             "disable_custom_all_reduce": True,  # Fix for virtualized network deadlocks
             "enforce_eager": True,              # Bypass for graph compilation deadlocks
@@ -72,11 +82,11 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             )
             templated_inputs.append(full_string)
             
-        # 4. Generate Batched Reponses (Silent Collection)
+        # 4. Generate Batched Responses (Silent Collection)
         sampling_params = SamplingParams(
             temperature=0.3,
             top_p=0.95,
-            max_tokens=4096
+            max_tokens=4096 # Sized safely to fit cleanly within maximum context lengths
         )
         
         generate_kwargs = {}
@@ -124,7 +134,8 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
 
 def main():
     # 1. Load System Prompts and Data Blueprints (with fallback defaults)
-    os.makedirs("data", exist_ok=True)
+    os.makedirs("data/train", exist_ok=True)
+    os.makedirs("data/raw", exist_ok=True)
     
     try:
         with open("data/system-prompt.md", "r", encoding="utf-8") as f:
@@ -142,40 +153,79 @@ def main():
         with open("data/prompt-template.md", "w", encoding="utf-8") as f:
             f.write(global_template)
 
-    # 2. Assemble Evaluation Targets
+    # Internal Structured Tracking Master Matrix List
+    evaluation_set = []
+    
+    # -------------------------------------------------------------------------
+    # PART 1: APPEND INTEGRITY CHECK PROMPT
+    # -------------------------------------------------------------------------
+    evaluation_set.append({
+        "is_integrity": True,
+        "original_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
+        "templated_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
+        "system": "Du bist ein hilfreicher Assistent",
+        "reference_text": None
+    })
+    
+    # -------------------------------------------------------------------------
+    # PART 2: APPEND REGULAR UNTAGGED TEST PROMPTS
+    # -------------------------------------------------------------------------
     original_test_prompts = [
         "Warum ist der Himmel blau und nicht schwarz?",
         "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg. Hausärztinnen haben in der Landeshauptstadt einen Anteil von 77,5 Prozent, wie aus einer Auswertung der Kassenärztlichen Bundesvereinigung (KBV) hervorgeht. Auf Magdeburg folgen in den Top 3 der Ilm-Kreis (76,2 Prozent) und das Altenburger Land (74,1 Prozent) in Thüringen.\n\nIn Sachsen-Anhalt insgesamt liegt der Anteil der Ärztinnen bei 58,7 Prozent und damit im bundesweiten Vergleich recht hoch. Berlin hat den höchsten Ärztinnen-Anteil mit 60,2 Prozent, gefolgt von Hamburg und Sachsen mit je 58,9 Prozent. Schlusslicht ist das Saarland mit 47,5 Prozent."
     ]
     
-    # Internal Structured Tracking Matrix
-    evaluation_set = []
-    
-    # A. Append Part 1: Integrity Prompt Entry
-    evaluation_set.append({
-        "is_integrity": True,
-        "original_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
-        "templated_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
-        "system": "Du bist ein hilfreicher Assistent"
-    })
-    
-    # B. Append Part 2: Wrapped Test Prompts
     for text_block in original_test_prompts:
         evaluation_set.append({
             "is_integrity": False,
             "original_user": text_block,
             "templated_user": global_template.replace("%INPUT%", text_block),
-            "system": global_system_prompt
+            "system": global_system_prompt,
+            "reference_text": None
         })
 
-    # 3. Define Pipeline Infrastructure Matrix
+    # -------------------------------------------------------------------------
+    # PART 3: DYNAMICALLY INGEST ADAPTER DATASET FROM JSONL
+    # -------------------------------------------------------------------------
+    jsonl_path = "data/train/dataset.jsonl"
+    if os.path.exists(jsonl_path):
+        print(f"📥 Parsing active tuning records from: {jsonl_path}")
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    prompt_id = str(entry.get("id", "")).strip()
+                    if prompt_id:
+                        orig_base_path = f"data/raw/{prompt_id}_Standardsprache"
+                        ref_base_path = f"data/raw/{prompt_id}_Leichte_Sprache"
+                        
+                        # Dynamically resolve whether file exists as .txt or .md
+                        orig_content = read_file_with_extensions(orig_base_path)
+                        ref_content = read_file_with_extensions(ref_base_path)
+                        
+                        if orig_content:
+                            evaluation_set.append({
+                                "is_integrity": False,
+                                "original_user": orig_content,
+                                "templated_user": global_template.replace("%INPUT%", orig_content),
+                                "system": global_system_prompt,
+                                "reference_text": ref_content if ref_content else None
+                            })
+                except Exception as jsonl_err:
+                    print(f"⚠️ Warning skipping malformed JSONL line entry: {jsonl_err}")
+    else:
+        print(f"ℹ️ Storage path '{jsonl_path}' not found. Skipping dynamic dataset block additions.")
+
+    # 4. Define Pipeline Infrastructure Grid Matrix
     EVALUATION_PIPELINE = [
         ("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None),
         ("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None),
         ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
     ]
     
-    # Initialize Master Output Dictionary Architecture
+    # Initialize Master Output Dictionary Target Architecture
     output_json = {
         "system": global_system_prompt,
         "template": global_template,
@@ -183,37 +233,47 @@ def main():
         "prompts": []
     }
     
-    # Pre-populate prompts and compute initial input metrics
+    # Pre-populate rows and compute initial input baseline metrics
     for item in evaluation_set:
         record = {}
         if item["is_integrity"]:
             record["system"] = item["system"]
             record["template"] = ""
             
-        # Initial tuple setup: [Original Input Text, FRE, WSTF]
+        # Initial tuple configuration: [Original Input Text, FRE, WSTF]
         input_fre, input_wstf = get_raw_metrics(item["original_user"])
         record["r"] = [
             [item["original_user"], input_fre, input_wstf]
         ]
         output_json["prompts"].append(record)
 
-    # 4. Cascade Inference through registered models
+    # 5. Cascade Batch Inference sequentially through registered models
     for model_id, quant_type, max_len, adapter_id in EVALUATION_PIPELINE:
-        # Build clean string mapping identifying adapters if present
         display_name = model_id
         if adapter_id:
             display_name += f" ({adapter_id})"
         output_json["models"].append(display_name)
         
-        # Run silent batch generation pass
+        # Fetch responses silently for all items in batch
         responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
         
-        # Compute metrics for outputs and append directly to records
+        # Compute metrics for text answers and log to record matrix cells
         for idx, text_response in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
             output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf])
 
-    # 5. Output Serialization and S3 Shipments
+    # -------------------------------------------------------------------------
+    # PART 4: POST-PROCESSING - BOLT ON TUNING GROUND TRUTH REFERENCES
+    # -------------------------------------------------------------------------
+    print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
+    for idx, item in enumerate(evaluation_set):
+        if item["reference_text"] is not None:
+            ref_txt = item["reference_text"]
+            ref_fre, ref_wstf = get_raw_metrics(ref_txt)
+            # Appends the reference tuple directly behind the final model evaluation position
+            output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
+
+    # 6. Output Serialization and S3 Shipments
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     filename = f"evaluation_{timestamp}.json"
     

@@ -31,5 +31,8 @@ uv pip install vllm transformers "mistral_common>=1.11.0"
 
 export VLLM_WORKER_MULTIPROC_METHOD="spawn"
 
-echo "🎯 Environment locked down. Launching Mistral Small 4 Inference..."
+echo "Pulling dataset from DVC..."
+python -m dvc pull
+
+echo "🎯 Environment locked down. Launching Evaluation..."
 python src/spike.py

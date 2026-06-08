@@ -41,4 +41,4 @@ RUN chmod +x /runner/entrypoint.sh
 ENTRYPOINT ["/bin/bash", "/runner/entrypoint.sh"]
 
 # Set the default action to execute the current script in the repository
-CMD ["/bin/bash", "/runner/repo/spike.sh"]
+CMD ["/bin/bash", "/runner/repo/train.sh"]
