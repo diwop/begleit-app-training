@@ -9,16 +9,18 @@ def main():
     SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
     USER_PROMPTS = ["Warum ist der Himmel blau?"]
     
-    print(f"📦 Booting vLLM Engine on top of CUDA 13 Environment: {MODEL_ID}")
+    print(f"📦 Booting vLLM Engine on top of Axolotl Environment: {MODEL_ID}")
     
     # 2. Map Weights Directly Into VRAM Across Both Cards
-    # OPTIMIZATION: Swapped 'awq' for 'awq_marlin' for maximum Ada Lovelace tensor math throughput
     llm = LLM(
         model=MODEL_ID,
         quantization="awq_marlin",       
         tensor_parallel_size=2,   
-        max_model_len=2048,
-        trust_remote_code=True
+        max_model_len=8192, 
+        trust_remote_code=True,
+        # CRITICAL HARDWARE FIX: Bypasses broken custom peer-to-peer memory kernels 
+        # and forces vLLM to rely on our robust host-memory NCCL configurations.
+        disable_custom_all_reduce=True
     )
     
     # 3. Pull Tokenizer to cleanly build Mistral chat structures
@@ -31,17 +33,16 @@ def main():
         max_tokens=256
     )
     
-# 5. Build and format payloads by blending the system prompt into the first user turn
+    # 5. Build and format payloads by blending the system prompt into the first user turn
     formatted_payloads = []
     for user_query in USER_PROMPTS:
-        # Combine system prompt context directly into the initial user block
+        # Prepend system context to handle Mixtral v0.1 alternating user-role checks
         combined_content = f"{SYSTEM_PROMPT}\n\n{user_query}"
         
         messages = [
             {"role": "user", "content": combined_content}
         ]
         
-        # This will now process cleanly without throwing a Jinja2 error
         full_templated_string = tokenizer.apply_chat_template(
             messages, 
             tokenize=False, 
