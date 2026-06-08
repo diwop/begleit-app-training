@@ -5,7 +5,7 @@ import sys
 import torch
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
-from vllm.lora.request import LoraRequest # Mandatory for hot-swapping adapters
+from vllm.lora.request import LoRARequest # Mandatory for hot-swapping adapters
 from vllm.distributed.parallel_state import destroy_model_parallel
 
 def run_model_spike(model_id, quantization_type, max_len=4096, adapter_id=None):
@@ -66,7 +66,7 @@ def run_model_spike(model_id, quantization_type, max_len=4096, adapter_id=None):
         if adapter_id:
             # Instantiate the tracking pointer for the dynamic adapter injection layer
             # Parameters: (Reference Alias, Unique Numeric ID, Repo ID or Local Path)
-            lora_request = LoraRequest("spike_adapter_layer", 1, adapter_id)
+            lora_request = LoRARequest("spike_adapter_layer", 1, adapter_id)
             generate_kwargs["lora_request"] = lora_request
             
         print(f"\n⚡ Processing token generation loop...", flush=True)
