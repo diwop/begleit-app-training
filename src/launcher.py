@@ -169,7 +169,11 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
 
 def main():
     # Apply memory segmentation allocations globally before execution hooks begin
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
+    # FORCE COOLDOWN: Deactivate the experimental V1 graph compiler.
+    # This prevents the engine from cross-routing Mistral layers into DeepSeek MLA operators.
+    os.environ["VLLM_USE_V1"] = "0"
 
     if not torch.cuda.is_available():
         print("❌ ERROR: No CUDA devices identified on the host cluster!")
