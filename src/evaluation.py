@@ -50,15 +50,24 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     generated_responses = []
     
     try:
+        # DYNAMIC HARDWARE DETECTION
+        # Automatically scales tensor parallelism to match available GPUs (e.g., 4)
+        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        
+        # Fallback security check to ensure it adheres to the strict power-of-2 rule
+        if available_gpus not in [1, 2, 4, 8]:
+            print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
+            available_gpus = 2
+
         llm_kwargs = {
             "model": model_id,
             "quantization": quantization_type,
-            "tensor_parallel_size": 2,          # Slices layers across 2 GPUs
-            "max_model_len": max_len,           
+            "tensor_parallel_size": available_gpus,
+            "max_model_len": max_len,
             "trust_remote_code": True,
-            "disable_custom_all_reduce": True,  
-            "enforce_eager": True,              
-            "gpu_memory_utilization": 0.82      
+            "disable_custom_all_reduce": True,
+            "enforce_eager": True,
+            "gpu_memory_utilization": 0.82
         }
         
         # Enforce text-only parameters for Mistral multimodal models to avoid profiling crashes

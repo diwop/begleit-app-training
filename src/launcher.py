@@ -2,7 +2,7 @@
 import os
 import json
 import time
-from datetime import datetime, UTC
+import datetime
 import torch
 import subprocess
 import sys
@@ -14,10 +14,10 @@ def merge_configs(base_path: str, override_path: str):
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
 
-def generate_runtime_deepspeed(large: bool, output_json_path: str):
+def generate_runtime_deepspeed(output_json_path: str):
     """
     Reads the base Axolotl ZeRO-3 template, injects long-prompt activation partitioning,
-    and dynamically applies CPU offloading for large models to prevent OOMs.
+    and locks offloading to 'none' to bypass massive system host RAM dependencies.
     """
     source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
     
@@ -39,6 +39,13 @@ def generate_runtime_deepspeed(large: bool, output_json_path: str):
             }
         }
 
+    # Enforce strict Stage 3 parameter sharding so Mistral 119B can fit seamlessly on 48GB cards
+    ds_dict["zero_optimization"]["stage"] = 3
+    
+    # Keep execution entirely on VRAM channels. Drops host RAM requirements down to ~32GB/64GB.
+    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
+    ds_dict["zero_optimization"]["offload_param"] = {"device": "none"}
+
     # Inject Activation Partitioning (Crucial to process 10k+ token sequences)
     ds_dict["activation_checkpointing"] = {
         "partition_activations": True,
@@ -46,24 +53,13 @@ def generate_runtime_deepspeed(large: bool, output_json_path: str):
         "cpu_checkpointing": False
     }
 
-    # Apply Conditional CPU Offloading for large models
-    if large:
-        print("⚙️ [DeepSpeed Engine] Activating CPU Optimizer Offloading for large model...")
-        ds_dict["zero_optimization"]["offload_optimizer"] = {
-            "device": "cpu",
-            "pin_memory": True
-        }
-    else:
-        print("⚙️ [DeepSpeed Engine] Maximizing VRAM execution speed...")
-        ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
-
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(ds_dict, f, indent=2)
         
     print(f"✅ DeepSpeed configuration compiled successfully at: {output_json_path}")
     return output_json_path
 
-def run_training_job(config_path: str, num_gpus: int, run_id: str, large: bool):
+def run_training_job(config_path: str, num_gpus: int, run_id: str):
     """
     A modular function that isolates configuration merging, runtime deepspeed building,
     and execution tracking for an individual model training loop run.
@@ -77,7 +73,6 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str, large: bool):
 
     # 1. Merge selected target configuration with base parameters
     merged_cfg = merge_configs("config/base.yml", config_path)
-    base_model_str = str(merged_cfg.get("base_model", ""))
 
     # Unique filenames to prevent overlapping cache clashes inside sequential cycles
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
@@ -89,8 +84,8 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str, large: bool):
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # FIXED BUG: Pass the boolean flag 'large' and target file path to generate_runtime_deepspeed
-    generate_runtime_deepspeed(large, runtime_ds_path)
+    # Generate the unified VRAM-centric DeepSpeed configuration file
+    generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
     # Save the resolved, finalized configuration path for Axolotl to consume
@@ -139,25 +134,22 @@ def main():
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     # -------------------------------------------------------------------------
-    # THE SEQUENTIAL TRAINING PIPELINE MATRIX
-    # Register your training configurations here to step through them in a loop
+    # THE SEQUENTIAL TRAINING PIPELINE MATRIX (Cleaned & Simplified strings)
     # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
-        ["config/train-gemma4.yml", False],
-        ["config/train-mistral4small.yml", True]
+        "config/train-gemma4.yml",
+        "config/train-mistral4small.yml"
     ]
     
-    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
     
-    # Track output directory paths to synchronize everything to S3 at the end
     completed_output_dirs = []
 
     print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
     
-    for config_yaml_path, large in TRAINING_PIPELINE:
-        # FIXED BUG: Correctly pass the large boolean flag to the training job orchestrator
-        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id, large)
+    for config_yaml_path in TRAINING_PIPELINE:
+        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
         completed_output_dirs.append((output_path, config_yaml_path))
 
     # -------------------------------------------------------------------------
@@ -171,7 +163,6 @@ def main():
         
         for output_dir, config_path in completed_output_dirs:
             if os.path.exists(os.path.join(output_dir, "adapter_config.json")):
-                # Extract the final sub-folder directory name to keep your bucket clean
                 model_target_dirname = os.path.basename(os.path.normpath(output_dir))
                 s3_target = f"s3://{s3_bucket}/{run_id}/{model_target_dirname}"
                 
