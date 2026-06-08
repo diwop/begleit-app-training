@@ -1,69 +1,120 @@
 # --- src/spike.py ---
 import os
+import gc
 import sys
+import torch
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
+from vllm.distributed.parallel_state import destroy_model_parallel
 
-def main():
-    # 1. Target the 4-bit AWQ quantized Mistral Small 4 flagship model
-    MODEL_ID = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
-    SYSTEM_PROMPT = "Du bist ein hilfreicher Assistent."
-    USER_PROMPTS = ["Warum ist der Himmel blau?"]
+def run_model_spike(model_id, quantization_type, max_len=4096):
+    """
+    A modular function that isolates engine initialization, execution,
+    and complete VRAM evacuation for a sequential model evaluation.
+    """
+    print("\n" + "="*60)
+    print(f"🚀 INITIALIZING ENGINE PIPELINE: {model_id}")
+    print(f"📟 Mode: {quantization_type or 'Unquantized (16-bit)'} | Context: {max_len}")
+    print("="*60, flush=True)
     
-    print(f"📦 Booting 119B MoE Architecture: {MODEL_ID}", flush=True)
-    print(f"📟 Allocating 128 experts evenly across 2x L40S GPUs...", flush=True)
-    
-    # 2. Configure the Engine for the 60GB Model Footprint
-    llm = LLM(
-        model=MODEL_ID,
-        quantization="compressed-tensors",
-        tensor_parallel_size=2,       # Splits the 119B parameter footprint across both cards
-        max_model_len=8192,           # Plenty of context headroom for document digestion
-        trust_remote_code=True,
-        disable_custom_all_reduce=True, # Bypasses broken custom peer-to-peer cloud memory links
-        enforce_eager=True,           # Bypasses CUDA graph compilation for direct execution stability
-        gpu_memory_utilization=0.92   # Maximize allocation safety for the KV cache pool
-    )
-    
-    # 3. Pull the native tokenizer supporting Mistral Small 4 rules
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    
-    # 4. Clean, Native Multi-Role Structural Payloads (No more hacks required!)
-    formatted_payloads = []
-    for user_query in USER_PROMPTS:
+    try:
+        # 1. Initialize the specific multi-GPU vLLM engine instance
+        llm = LLM(
+            model=model_id,
+            quantization=quantization_type,
+            tensor_parallel_size=2,          # Slices layers across both L40S cards
+            max_model_len=max_len,           # Conservative limits to shield sequential memory slots
+            trust_remote_code=True,
+            disable_custom_all_reduce=True,  # Mandatory fix for virtualized network deadlocks
+            enforce_eager=True,              # Mandatory bypass for graph compilation errors
+            gpu_memory_utilization=0.82      # Protects against cross-run memory fragmentation
+        )
+        
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # 2. Build Chat Structures (Gemma 4 & Llama 3.1 support native system tags)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
+            {"role": "system", "content": "Du bist ein hilfreicher Assistent."},
+            {"role": "user", "content": "Warum ist der Himmel blau?"}
         ]
         
-        # Mistral Small 4 cleanly wraps system tokens into native structural block boundaries
         full_templated_string = tokenizer.apply_chat_template(
             messages, 
             tokenize=False, 
             add_generation_prompt=True
         )
-        formatted_payloads.append(full_templated_string)
         
-    sampling_params = SamplingParams(
-        temperature=0.3,
-        top_p=0.95,
-        max_tokens=4096
-    )
-    
-    print("\n⚡ Processing token generation sequence...", flush=True)
-    outputs = llm.generate(formatted_payloads, sampling_params)
-    
-    # 5. Flush and Output Results
-    print("\n===============================================", flush=True)
-    print("🧪 MISTRAL SMALL 4 GENERATION RESULTS", flush=True)
-    print("===============================================", flush=True)
-    
-    for output in outputs:
-        print(f"Generated Response:\n{output.outputs[0].text.strip()}", flush=True)
+        sampling_params = SamplingParams(
+            temperature=0.3,
+            top_p=0.95,
+            max_tokens=150
+        )
         
-    print("===============================================", flush=True)
+        print(f"\n⚡ Processing token generation loop...", flush=True)
+        outputs = llm.generate([full_templated_string], sampling_params)
+        
+        print(f"\n🧪 [RESULTS FOR {model_id}]:")
+        print(f"{outputs[0].outputs[0].text.strip()}", flush=True)
+        
+    except Exception as e:
+        print(f"\n❌ Execution error encountered on {model_id}: {e}", flush=True)
+        
+    finally:
+        # 3. THE CRITICAL SECTOR: Force complete multi-GPU process and VRAM evacuation
+        print(f"\n♻️ Deconstructing engine and evacuating VRAM channels...", flush=True)
+        
+        # Shutdown background process managers within the active vLLM V1 core
+        try:
+            if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
+                llm.llm_engine.engine_core.shutdown()
+        except Exception:
+            pass
+            
+        # Terminate cross-GPU tensor parallel coordination channels
+        try:
+            destroy_model_parallel()
+        except Exception:
+            pass
+            
+        # Evacuate local pointer identities
+        if 'llm' in locals():
+            del llm
+        if 'tokenizer' in locals():
+            del tokenizer
+            
+        # Flush garbage collection layers and clear GPU registers
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print("✅ VRAM completely evacuated. Ready for next slot.", flush=True)
+
+def main():
+    # Multi-Model Pipeline Sequence Matrix
+    # Configuration Layout: (HuggingFace Model ID, Quantization Flag, Max Context Length)
+    EVALUATION_PIPELINE = [
+        (
+            "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", 
+            "compressed-tensors", 
+            4096
+        ),
+        (
+            "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
+            "awq", 
+            4096
+        ),
+        (
+            "meta-llama/Llama-3.1-8B-Instruct", 
+            None, # Passing None tells vLLM to run in full unquantized 16-bit
+            4096
+        )
+    ]
     
-    sys.stdout.flush()
+    print(f"🎬 Starting pipeline matrix execution ({len(EVALUATION_PIPELINE)} models registered)...")
+    
+    for model_id, quant_type, max_len in EVALUATION_PIPELINE:
+        run_model_spike(model_id, quant_type, max_len)
+        
+    print("\n🏁 Complete pipeline sequence processed successfully!")
 
 if __name__ == "__main__":
     main()
