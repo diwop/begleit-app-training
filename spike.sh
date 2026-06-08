@@ -23,7 +23,7 @@ export OMP_NUM_THREADS=1
 # Safe virtual host network routing blocks (Essential for RunPod multi-GPU handshakes)
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
-export NCCL_DEBUG=INFO # Activate for more information
+# export NCCL_DEBUG=INFO # Activate for more information
 
 echo "📥 Upgrading environment dependencies for Mistral Small 4..."
 # Ensure your virtual environment pulls the necessary tokenization engine extensions
