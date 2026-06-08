@@ -2,7 +2,7 @@
 import os
 import json
 import time
-import datetime
+from datetime import datetime, UTC
 import torch
 import subprocess
 import sys
@@ -147,7 +147,7 @@ def main():
         ["config/train-mistral4small.yml", True]
     ]
     
-    timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     run_id = f"{timestamp}_run"
     
     # Track output directory paths to synchronize everything to S3 at the end

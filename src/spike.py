@@ -3,7 +3,7 @@ import os
 import gc
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 import torch
 import boto3
@@ -270,7 +270,7 @@ def main():
             output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
 
     # 6. Output Serialization and S3 Shipments
-    timestamp = datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     filename = f"evaluation_{timestamp}.json"
     
     bucket_name = os.environ.get("S3_BUCKET")

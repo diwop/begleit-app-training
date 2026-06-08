@@ -19,6 +19,11 @@ else:
 
 @pytest.fixture
 def mock_cuda():
+    # FIXED: Automatically mock device properties with a real byte integer 
+    # to prevent MagicMock object format string precision crashes (:.1f)
+    mock_props = MagicMock()
+    mock_props.total_memory = 48 * (1024**3)  # Default to a safe 48 GB profile
+    mock_torch_obj.cuda.get_device_properties.return_value = mock_props
     yield mock_torch_obj.cuda
 
 @pytest.fixture
