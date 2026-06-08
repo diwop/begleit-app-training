@@ -11,9 +11,6 @@ dependencies = [
     "textstat>=0.7.13",
     "awscli",
     "boto3",
-    "vllm==0.7.3",               # Pinning vLLM ensures cluster worker symmetry
-    "transformers",
-    "mistral_common>=1.11.0",
 ]
 
 [build-system]

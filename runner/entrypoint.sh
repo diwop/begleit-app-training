@@ -37,8 +37,9 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 # Install (optional) dependency delta
 cd /runner/repo
-uv export --no-emit-project --format requirements-txt > requirements.txt
+uv pip compile pyproject.toml -o requirements.txt
 uv pip install -r requirements.txt
+uv pip install vllm transformers "mistral_common>=1.11.0"    
 
 # Prevent loop of death and manage script hand-offs cleanly
 if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
