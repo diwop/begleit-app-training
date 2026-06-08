@@ -113,18 +113,18 @@ def main():
         #     4096,
         #     None  # No adapter required
         # ),
-        # (
-        #     "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
-        #     "awq", 
-        #     4096,
-        #     None  # No adapter required
-        # ),
         (
-            "meta-llama/Llama-3.1-8B-Instruct", 
-            None, # Full unquantized 16-bit precision mode
+            "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
+            "awq", 
             4096,
-            "tschomacker/lora_adapter_llama_3.1_8B" # Dynamic adapter injection target
-        )
+            None  # No adapter required
+        ),
+        # (
+        #     "meta-llama/Llama-3.1-8B-Instruct", 
+        #     None, # Full unquantized 16-bit precision mode
+        #     4096,
+        #     "tschomacker/lora_adapter_llama_3.1_8B" # Dynamic adapter injection target
+        # )
     ]
     
     print(f"🎬 Starting pipeline matrix execution ({len(EVALUATION_PIPELINE)} models registered)...")
