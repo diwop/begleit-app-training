@@ -131,15 +131,15 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     # -------------------------------------------------------------------------
     if "gemma" in config_path.lower():
         print("💡 Gemma 4 (26B) detected: Overriding to native unquantized bfloat16 base + Stage 3 LoRA...")
-        print("🚀 This bypasses bitsandbytes initialization spikes and unlocks 3x faster training speed.")
         merged_cfg["load_in_8bit"] = False
         merged_cfg["load_in_4bit"] = False
         merged_cfg["qlora_sharded_model_loading"] = False
     else:
-        print("💡 Mistral Small 4 (119B) detected: Maintaining 4-bit base + Stage 3 Sharded Loading...")
+        print("💡 Mistral Small 4 (119B) detected: Model is natively pre-quantized in FP8!")
+        print("🚀 Disabling conflicting BitsAndBytes rules to allow direct native loading under Stage 3 sharding...")
         merged_cfg["load_in_8bit"] = False
-        merged_cfg["load_in_4bit"] = True
-        merged_cfg["qlora_sharded_model_loading"] = True
+        merged_cfg["load_in_4bit"] = False
+        merged_cfg["qlora_sharded_model_loading"] = False
 
     # Generate and link the unified VRAM-centric DeepSpeed configuration file
     generate_runtime_deepspeed(runtime_ds_path)
@@ -202,7 +202,7 @@ def main():
     # THE SEQUENTIAL TRAINING PIPELINE MATRIX
     # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
-        "config/train-gemma4.yml",
+        # "config/train-gemma4.yml",
         "config/train-mistral4small.yml"
     ]
     
