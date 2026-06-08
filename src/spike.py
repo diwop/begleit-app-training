@@ -31,13 +31,17 @@ def main():
         max_tokens=256
     )
     
-    # 5. Build and format payloads with consistent system prompts
+# 5. Build and format payloads by blending the system prompt into the first user turn
     formatted_payloads = []
     for user_query in USER_PROMPTS:
+        # Combine system prompt context directly into the initial user block
+        combined_content = f"{SYSTEM_PROMPT}\n\n{user_query}"
+        
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
+            {"role": "user", "content": combined_content}
         ]
+        
+        # This will now process cleanly without throwing a Jinja2 error
         full_templated_string = tokenizer.apply_chat_template(
             messages, 
             tokenize=False, 
