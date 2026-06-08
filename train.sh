@@ -12,6 +12,7 @@ uv pip install gptqmodel # required for AWQ base models in evaluation
 
 TRAIN=${TRAIN:-"train"}
 
+export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"
 
 

@@ -47,7 +47,7 @@ def main():
     sampling_params = SamplingParams(
         temperature=0.3,
         top_p=0.95,
-        max_tokens=256
+        max_tokens=4096
     )
     
     print("\n⚡ Processing token generation sequence...", flush=True)
