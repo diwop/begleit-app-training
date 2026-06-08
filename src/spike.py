@@ -65,6 +65,13 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "enforce_eager": True,
             "gpu_memory_utilization": 0.82
         }
+
+        # Mistral Small 4 maps to a multimodal vision framework.
+        # It strictly requires tokenizer_mode="mistral" so that the memory-profiling
+        # checks format dummy inputs using native mistral_common parameters.
+        if "mistral" in model_id.lower():
+            print("🔗 Enforcing native Mistral tokenization processing layers...")
+            llm_kwargs["tokenizer_mode"] = "mistral"
         
         if adapter_id:
             llm_kwargs["enable_lora"] = True
@@ -214,8 +221,8 @@ def main():
     # 4. Define Pipeline Infrastructure Grid Matrix
     EVALUATION_PIPELINE = [
         ("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None),
-        # ("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None),
-        # ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
+        ("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None),
+        ("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B")
     ]
     
     output_json = {
