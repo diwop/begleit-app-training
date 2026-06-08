@@ -97,16 +97,16 @@ def main():
             "compressed-tensors", 
             4096
         ),
-        (
-            "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
-            "awq", 
-            4096
-        ),
-        (
-            "meta-llama/Llama-3.1-8B-Instruct", 
-            None, # Passing None tells vLLM to run in full unquantized 16-bit
-            4096
-        )
+        # (
+        #     "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
+        #     "awq", 
+        #     4096
+        # ),
+        # (
+        #     "meta-llama/Llama-3.1-8B-Instruct", 
+        #     None, # Passing None tells vLLM to run in full unquantized 16-bit
+        #     4096
+        # )
     ]
     
     print(f"🎬 Starting pipeline matrix execution ({len(EVALUATION_PIPELINE)} models registered)...")
