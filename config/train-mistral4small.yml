@@ -1,12 +1,11 @@
 # --- config/train-mistral4small.yml ---
-base_model: mistralai/Mistral-Small-4-119B-2603
+base_model: axolotl-ai-co/Mistral-Small-4-119B-2603-BF16
 
-# Set to lora to bypass the Pydantic validator's 4-bit check
-adapter: lora
+adapter: qlora
 
 load_in_8bit: false
-load_in_4bit: false                # Disabled: Model is already pre-quantized in FP8
-qlora_sharded_model_loading: false # Disabled: Let ZeRO-3 shard the native FP8 weights
+load_in_4bit: true                      # Enable: Compresses the unquantized base down to 4-bit slots
+qlora_sharded_model_loading: true       # Mandatory: Shards the 119B weights to fit 4x L40S layout
 
 datasets:
   - path: data/train/dataset.jsonl
