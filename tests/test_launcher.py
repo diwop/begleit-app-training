@@ -19,8 +19,7 @@ else:
 
 @pytest.fixture
 def mock_cuda():
-    # FIXED: Automatically mock device properties with a real byte integer 
-    # to prevent MagicMock object format string precision crashes (:.1f)
+    # Mock device properties with a real byte integer to prevent MagicMock formatting crashes (:.1f)
     mock_props = MagicMock()
     mock_props.total_memory = 48 * (1024**3)  # Default to a safe 48 GB profile
     mock_torch_obj.cuda.get_device_properties.return_value = mock_props
@@ -55,7 +54,6 @@ def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds,
     Verifies the complete sequential pipeline loop when S3 backups are disabled.
     Should run 2 training subprocesses and exactly 1 final global evaluation call.
     """
-    # Force S3 bucket variable to be absent
     monkeypatch.delenv("S3_BUCKET", raising=False)
     
     mock_cuda.is_available.return_value = True
@@ -65,7 +63,9 @@ def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds,
     mock_cfg = MagicMock()
     mock_cfg.get.side_effect = lambda key, default=None: "/app/output/adapter/mock_job" if key == "output_dir" else default
     mock_merge.return_value = mock_cfg
-    mock_exists.return_value = False  # Assume EVAL=false or no adapter exists yet
+    
+    # FIXED: Return True for YAML configurations AND the final evaluation script path
+    mock_exists.side_effect = lambda path: True if (path.endswith(".yml") or "evaluation.py" in path) else False
 
     main()
 
@@ -108,15 +108,18 @@ def test_pipeline_execution_with_s3(mock_exists, mock_conf_save, mock_gen_ds, mo
     mock_cfg.get.side_effect = lambda key, default=None: "/app/output/adapter/mock_job" if key == "output_dir" else default
     mock_merge.return_value = mock_cfg
     
-    # Ensure os.path.exists confirms that training artifact records were generated successfully
-    mock_exists.side_effect = lambda path: True if "adapter_config.json" in path else False
+    # FIXED: Return True for .yml configs, adapter artifacts, AND the evaluation script
+    mock_exists.side_effect = lambda path: True if (
+        path.endswith(".yml") or 
+        "evaluation.py" in path or 
+        "adapter_config.json" in path
+    ) else False
 
     main()
 
     # Total expected calls: 2 training jobs + 2 s3 synchronization pushes + 1 evaluation = 5 invocations
     assert mock_subprocess.call_count == 5
 
-    # Scan subprocess arguments to verify that an AWS S3 command layer was executed
     s3_sync_triggered = False
     for call in mock_subprocess.call_args_list:
         cmd = call[0][0]
@@ -127,36 +130,24 @@ def test_pipeline_execution_with_s3(mock_exists, mock_conf_save, mock_gen_ds, mo
     assert s3_sync_triggered, "❌ Pipeline failed to trigger aws s3 sync sub-processes."
 
 
-# Updated to reflect our clean, production-targeted base model definitions
 CONFIG_TEST_CASES = [
-    (
-        "config/train-gemma4.yml", 
-        "google/gemma-4-26b-a4b-it"
-    ),
-    (
-        "config/train-mistral4small.yml", 
-        "mistralai/Mistral-Small-4-119B-2603"
-    ),
+    ("config/train-gemma4.yml", "google/gemma-4-26b-a4b-it"),
+    ("config/train-mistral4small.yml", "mistralai/Mistral-Small-4-119B-2603"),
 ]
 
 @pytest.mark.parametrize("override_file, expected_model", CONFIG_TEST_CASES)
 @patch("src.launcher.OmegaConf.load")
 @patch("src.launcher.OmegaConf.merge")
 def test_merge_configs(mock_merge, mock_load, override_file, expected_model):
-    """
-    Tests that the configuration engine fluidly maps base properties
-    and assigns proper base model tags.
-    """
+    """Tests that the configuration engine maps base properties and assigns proper model tags."""
     mock_base = MagicMock()
     mock_base.adapter = "qlora"
     
     mock_override = MagicMock()
     mock_override.base_model = expected_model
     
-    # Configure mock loaders to mimic configuration structural tracking maps
     mock_load.side_effect = [mock_base, mock_override]
     mock_merge.return_value = mock_override
 
     merged_cfg = merge_configs("config/base.yml", override_file)
-    
     assert merged_cfg.base_model == expected_model
