@@ -6,6 +6,8 @@ echo "📦 Mapping Axolotl Python 3.12 Virtual Environment..."
 export VIRTUAL_ENV="/workspace/axolotl-venv"
 export PATH="/workspace/axolotl-venv/bin:$PATH"
 
+export HF_HOME="/app/huggingface_cache"
+
 # Eliminate CPU management thread bloat
 export OMP_NUM_THREADS=1
 
