@@ -14,13 +14,12 @@ def main():
     # 2. Map Weights Directly Into VRAM Across Both Cards
     llm = LLM(
         model=MODEL_ID,
-        quantization="awq_marlin",       
+        quantization="awq",       # Reverted to standard stable AWQ execution kernels
         tensor_parallel_size=2,   
         max_model_len=8192, 
         trust_remote_code=True,
-        # CRITICAL HARDWARE FIX: Bypasses broken custom peer-to-peer memory kernels 
-        # and forces vLLM to rely on our robust host-memory NCCL configurations.
-        disable_custom_all_reduce=True
+        disable_custom_all_reduce=True, # Forces fallback to host NCCL routing
+        enforce_eager=True        # CRITICAL: Bypasses CUDA graphs to prevent virtualized deadlocks
     )
     
     # 3. Pull Tokenizer to cleanly build Mistral chat structures
@@ -50,14 +49,26 @@ def main():
         )
         formatted_payloads.append(full_templated_string)
         
-    print("\n⚡ Processing token generation sequence...")
+    print("\n⚡ Processing token generation sequence...", flush=True)
     outputs = llm.generate(formatted_payloads, sampling_params)
     
-    # 6. Output Evaluation Results
-    print("\n--- 🧪 SPIKE SYSTEM RESULTS ---")
+    # 6. Output Evaluation Results with Mandatory Stream Flushes
+    print("\n===============================================", flush=True)
+    print("🧪 SPIKE SYSTEM RESULTS (FORCED FLUSH)", flush=True)
+    print("===============================================", flush=True)
+    
     for output in outputs:
-        print(f"Output response:\n{output.outputs[0].text.strip()}")
-    print("--------------------------------\n")
+        prompt_query = output.prompt
+        generated_text = output.outputs[0].text
+        
+        print(f"\nPrompt Context Passed:\n{prompt_query}", flush=True)
+        print(f"\nGenerated Response:\n{generated_text.strip()}", flush=True)
+        
+    print("\n===============================================", flush=True)
+    
+    # Final safety flush to guarantee delivery before process teardown
+    import sys
+    sys.stdout.flush()
 
 if __name__ == "__main__":
     main()
