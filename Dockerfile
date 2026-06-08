@@ -30,9 +30,9 @@ RUN --mount=type=cache,target=/app/uv_cache \
     uv pip compile pyproject.toml -o requirements.txt && \
     uv pip install -r requirements.txt
 
-# Layer on model execution infrastructure dynamically
+# Install vllm separately
 RUN --mount=type=cache,target=/app/uv_cache \
-    uv pip install vllm transformers "mistral_common>=1.11.0"    
+    uv pip install vllm
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh

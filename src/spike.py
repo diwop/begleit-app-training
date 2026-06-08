@@ -76,7 +76,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         sampling_params = SamplingParams(
             temperature=0.3,
             top_p=0.95,
-            max_tokens=4096 # Sized safely to fit cleanly within maximum context lengths
+            max_tokens=4096
         )
         
         generate_kwargs = {}

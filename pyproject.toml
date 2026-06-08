@@ -11,6 +11,9 @@ dependencies = [
     "textstat>=0.7.13",
     "awscli",
     "boto3",
+    "transformers",
+    "mistral_common>=1.11.0"
+]
 ]
 
 [build-system]

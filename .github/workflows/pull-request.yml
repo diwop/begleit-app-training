@@ -59,17 +59,18 @@ jobs:
           BASE_IMAGE="axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0"
           echo "Booting $BASE_IMAGE..."
           
-          # We mount to /app to protect Axolotl's native /workspace!
           docker run --rm \
             -v ${{ github.workspace }}:/app \
             -w /app \
             --user root \
             --entrypoint bash \
             $BASE_IMAGE -c "
-            echo 'Dynamically compiling pyproject.toml blueprints...'
+            echo 'Compiling utility and data prep blueprints...'
             uv pip compile pyproject.toml -o requirements.txt
             uv pip install --no-cache -r requirements.txt
-            uv pip install vllm transformers "mistral_common>=1.11.0"    
+            
+            echo 'Layering backend vllm execution infrastructure...'
+            uv pip install --no-cache vllm
             
             echo 'Executing Version Integrity Smoke Test...'
             python tests/container_smoke_test.py
