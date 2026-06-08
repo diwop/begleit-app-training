@@ -7,12 +7,61 @@ import torch
 import subprocess
 import sys
 from omegaconf import OmegaConf
+from huggingface_hub import snapshot_download
 
 def merge_configs(base_path: str, override_path: str):
     """Loads and merges a base YAML and an override YAML. Override values take precedence."""
     base_cfg = OmegaConf.load(base_path)
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
+
+def pre_download_models(pipeline_configs):
+    """
+    Sequentially pre-stages base models in a single-process environment.
+    CRITICAL: Immediately aborts execution if HF_TOKEN is missing or empty.
+    Guarantees clean local disk caching before distributed acceleration hooks bind.
+    """
+    token = os.environ.get("HF_TOKEN")
+    if not token or not token.strip():
+        print("\n" + "❌"*30)
+        print("❌ CRITICAL ENVIRONMENT VIOLATION: HF_TOKEN is missing or empty!")
+        print("❌ Gated models (Gemma, Mistral Small, Llama) require active authentication.")
+        print("❌ Please export your token before running the script:")
+        print("❌     export HF_TOKEN=\"hf_your_token_here\"")
+        print("❌"*30 + "\n", flush=True)
+        sys.exit(1)
+    
+    print("\n" + "="*60)
+    print("📥 PRE-STAGING BASE MODELS (Single-Process Cache Warmup)")
+    print("="*60, flush=True)
+    
+    processed_models = set()
+    for config_path in pipeline_configs:
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"❌ Configuration matrix error: Target file missing '{config_path}'")
+            
+        # Extract base model identifier cleanly
+        merged_cfg = merge_configs("config/base.yml", config_path)
+        base_model_str = str(merged_cfg.get("base_model", "")).strip()
+        
+        if base_model_str and base_model_str not in processed_models:
+            print(f"📦 Verifying local file mapping for: '{base_model_str}'...", flush=True)
+            try:
+                # Triggers explicit snapshot download using public pypi hub clients
+                snapshot_download(
+                    repo_id=base_model_str,
+                    token=token,
+                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.pt"] # Strip non-safetensors formats to save disk space
+                )
+                print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
+                processed_models.add(base_model_str)
+            except Exception as e:
+                print(f"\n❌ CRITICAL: Failed to cache weights for {base_model_str}!")
+                print(f"Error Source: {e}")
+                print("Aborting training pipeline to protect cluster stability.")
+                sys.exit(1)
+                
+    print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
 
 def generate_runtime_deepspeed(output_json_path: str):
     """
@@ -68,10 +117,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
     print("="*60, flush=True)
 
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"❌ Target training configuration file missing: '{config_path}'")
-
-    # 1. Merge selected target configuration with base parameters
+    # Merge selected target configuration with base parameters
     merged_cfg = merge_configs("config/base.yml", config_path)
 
     # Unique filenames to prevent overlapping cache clashes inside sequential cycles
@@ -79,7 +125,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    # 2. Enforce long-prompt safety overrides directly to the configuration block
+    # Enforce long-prompt safety overrides directly to the configuration block
     merged_cfg["micro_batch_size"] = 1
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
@@ -102,7 +148,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     if is_eval_mode and not adapter_exists:
         print(f"\n[WARNING] EVAL=true is set, but no adapter was found at '{output_dir}'. Commencing training...")
 
-    # 3. Formulate the multi-GPU launch execution array command
+    # Formulate the multi-GPU launch execution array command
     cmd = [
         "accelerate", "launch",
         "--multi_gpu",
@@ -134,14 +180,18 @@ def main():
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     # -------------------------------------------------------------------------
-    # THE SEQUENTIAL TRAINING PIPELINE MATRIX (Cleaned & Simplified strings)
+    # THE SEQUENTIAL TRAINING PIPELINE MATRIX
     # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
         "config/train-gemma4.yml",
         "config/train-mistral4small.yml"
     ]
     
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
+    # --- PHASE 0: EXECUTE SINGLE PROCESS SAFE PRE-DOWNLOAD ON DEMAND ---
+    pre_download_models(TRAINING_PIPELINE)
+    
+    # Generate runtime tracking context metrics
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
     
     completed_output_dirs = []

@@ -10,6 +10,13 @@ adapter: lora
 
 output_dir: /app/output/adapter/gemma4
 
+# Map special tokens directly to help Axolotl's parser identify 
+# turn boundaries, clearing the false-positive warning.
+special_tokens:
+  eos_token: "<eos>"
+eot_tokens:
+  - "<end_of_turn>"
+
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template

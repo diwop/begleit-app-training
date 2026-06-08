@@ -8,9 +8,11 @@ TRAIN=${TRAIN:-"train"}
 export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"
 
+# Enable debugging
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 echo "=== Repository Execution Started ==="
-echo "Target Config: config/${TRAIN}.yml"
 echo "Logs will be saved to: $LOG_FILE"
 
 echo "Pulling dataset from DVC..."
