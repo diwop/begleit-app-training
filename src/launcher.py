@@ -184,7 +184,7 @@ def main():
     # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
         "config/train-gemma4.yml",
-        "config/train-mistral4small.yml"
+        # "config/train-mistral4small.yml"
     ]
     
     # --- PHASE 0: EXECUTE SINGLE PROCESS SAFE PRE-DOWNLOAD ON DEMAND ---
