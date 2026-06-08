@@ -294,5 +294,35 @@ def main():
         with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
         print(f"💾 Written to local file system: {filename}")
 
+def apply_vllm_mla_hotfix():
+    """
+    Automated hotfix patch for an active vLLM regression (Issue #43263).
+    Safely modifies the local site-packages file to fix the AWQ prefill crash.
+    """
+    target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
+    
+    if os.path.exists(target_file):
+        print("⚙️  Checking vLLM attention source files for AWQ compatibility bugs...")
+        with open(target_file, "r", encoding="utf-8") as f:
+            code = f.read()
+            
+        broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
+        fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
+        
+        if broken_string in code:
+            print("🩹 Applying official regression patch for Issue #43263...")
+            patched_code = code.replace(broken_string, fixed_string)
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(patched_code)
+            print("✅ Patch successfully compiled into virtual environment assets!")
+        else:
+            print("ℹ️  vLLM source file is already secure or patch was previously applied.")
+    else:
+        print("ℹ️  Alternative vLLM environment setup discovered. Bypassing hotfix layer.")
+
 if __name__ == "__main__":
+
+    # Trigger the automated patch check before any vLLM initialization begins
+    apply_vllm_mla_hotfix()
+
     main()
