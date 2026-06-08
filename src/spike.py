@@ -16,7 +16,7 @@ def main():
     # 2. Configure the Engine for the 60GB Model Footprint
     llm = LLM(
         model=MODEL_ID,
-        quantization="awq",           # Matches the 4-bit AWQ weight layout
+        quantization="compressed-tensors",
         tensor_parallel_size=2,       # Splits the 119B parameter footprint across both cards
         max_model_len=8192,           # Plenty of context headroom for document digestion
         trust_remote_code=True,
