@@ -14,10 +14,10 @@ def merge_configs(base_path: str, override_path: str):
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
 
-def generate_runtime_deepspeed(base_model_str: str, output_json_path: str):
+def generate_runtime_deepspeed(large: bool, output_json_path: str):
     """
     Reads the base Axolotl ZeRO-3 template, injects long-prompt activation partitioning,
-    and dynamically applies CPU offloading for large 119B models to prevent OOMs.
+    and dynamically applies CPU offloading for large models to prevent OOMs.
     """
     source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
     
@@ -46,16 +46,15 @@ def generate_runtime_deepspeed(base_model_str: str, output_json_path: str):
         "cpu_checkpointing": False
     }
 
-    # Apply Conditional CPU Offloading for Mistral Small 119B
-    is_mistral_119b = "mistral" in base_model_str.lower() and "119b" in base_model_str.lower()
-    if is_mistral_119b:
-        print("⚙️ [DeepSpeed Engine] Massive 119B architecture identified. Activating CPU Optimizer Offloading...")
+    # Apply Conditional CPU Offloading for large models
+    if large:
+        print("⚙️ [DeepSpeed Engine] Activating CPU Optimizer Offloading for large model...")
         ds_dict["zero_optimization"]["offload_optimizer"] = {
             "device": "cpu",
             "pin_memory": True
         }
     else:
-        print("⚙️ [DeepSpeed Engine] Standard 26B architecture identified. Maximizing VRAM execution speed...")
+        print("⚙️ [DeepSpeed Engine] Maximizing VRAM execution speed...")
         ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -144,8 +143,8 @@ def main():
     # Register your training configurations here to step through them in a loop
     # -------------------------------------------------------------------------
     TRAINING_PIPELINE = [
-        "config/train-gemma4.yml",
-        "config/train-mistral4small.yml"
+        ["config/train-gemma4.yml", False],
+        ["config/train-mistral4small.yml", True]
     ]
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -156,8 +155,8 @@ def main():
 
     print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
     
-    for config_yaml_path in TRAINING_PIPELINE:
-        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
+    for config_yaml_path, large in TRAINING_PIPELINE:
+        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id, large)
         completed_output_dirs.append((output_path, config_yaml_path))
 
     # -------------------------------------------------------------------------

@@ -66,12 +66,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "gpu_memory_utilization": 0.82
         }
 
-        # Mistral Small 4 maps to a multimodal vision framework.
-        # It strictly requires tokenizer_mode="mistral" so that the memory-profiling
-        # checks format dummy inputs using native mistral_common parameters.
-        if "mistral" in model_id.lower():
-            print("🔗 Enforcing native Mistral tokenization processing layers...")
-            llm_kwargs["tokenizer_mode"] = "mistral"
+        llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
         
         if adapter_id:
             llm_kwargs["enable_lora"] = True
@@ -270,7 +265,7 @@ def main():
             output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
 
     # 6. Output Serialization and S3 Shipments
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
     filename = f"evaluation_{timestamp}.json"
     
     bucket_name = os.environ.get("S3_BUCKET")
