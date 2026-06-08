@@ -12,6 +12,10 @@ LOG_FILE="/app/training_run.log"
 export NCCL_DEBUG=INFO
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
+# Disable p2p and ib communication for > 2 GPUs
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
+
 echo "=== Repository Execution Started ==="
 echo "Logs will be saved to: $LOG_FILE"
 

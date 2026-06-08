@@ -35,26 +35,24 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
     )
 
 def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
-    """Initializes vLLM engine, injects active adapters, handles batch evaluation sequences."""
+    """
+    Initializes the engine, handles runtime LoRA space allocation, batch processes
+    the entire evaluation set without printing outputs, and returns raw texts.
+    """
     if evaluation_set is None:
         evaluation_set = []
         
     print("\n" + "="*60)
     print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {model_id}")
     if adapter_id:
-        print(f"🧬 Hooking Active Local Adapter: {adapter_id}")
-    else:
-        print("💡 Running in Vanilla Baseline Mode (No Adapter)")
+        print(f"🧬 Active Adapter: {adapter_id}")
     print("="*60, flush=True)
     
     generated_responses = []
     
     try:
         # DYNAMIC HARDWARE DETECTION
-        # Automatically scales tensor parallelism to match available GPUs (e.g., 4)
         available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        
-        # Fallback security check to ensure it adheres to the strict power-of-2 rule
         if available_gpus not in [1, 2, 4, 8]:
             print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
             available_gpus = 2
@@ -69,18 +67,22 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "enforce_eager": True,
             "gpu_memory_utilization": 0.82
         }
-        
-        # Enforce text-only parameters for Mistral multimodal models to avoid profiling crashes
+
+        # FIX: Force text-only mapping AND explicit tokenizer routing rules for Mistral Small 4
         if "mistral" in model_id.lower():
-            print("🛑 Disabling vision modalities for text-only Mistral inference sequence...")
+            print("🛑 Disabling vision profiling modalities for text-only pipeline...")
             llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
-            
+            print("⚙️  Activating specialized Mistral tokenizer backend...")
+            llm_kwargs["tokenizer_mode"] = "mistral"
+        
         if adapter_id:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_loras"] = 1
             
         llm = LLM(**llm_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # FIX: Pass trust_remote_code=True here so the tokenizer can compile local configuration scripts
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         
         templated_inputs = []
         for prompt_item in evaluation_set:
@@ -113,6 +115,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             generated_responses.append(out.outputs[0].text.strip())
             
     except Exception as e:
+        # Re-raising the error during debugging can help identify if any alternate issues occur
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
         generated_responses = ["" for _ in evaluation_set]
         

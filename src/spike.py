@@ -56,10 +56,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     
     try:
         # DYNAMIC HARDWARE DETECTION
-        # Automatically scales tensor parallelism to match available GPUs (e.g., 4)
         available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        
-        # Fallback security check to ensure it adheres to the strict power-of-2 rule
         if available_gpus not in [1, 2, 4, 8]:
             print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
             available_gpus = 2
@@ -75,19 +72,21 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "gpu_memory_utilization": 0.82
         }
 
-        # Explicitly disable vision modalities for this text-only run.
-        # This prevents the upgraded vLLM engine from injecting mock image tokens 
-        # during startup profiling, clearing the mistral_common validation crash.
+        # FIX: Force text-only mapping AND explicit tokenizer routing rules for Mistral Small 4
         if "mistral" in model_id.lower():
             print("🛑 Disabling vision profiling modalities for text-only pipeline...")
             llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
+            print("⚙️  Activating specialized Mistral tokenizer backend...")
+            llm_kwargs["tokenizer_mode"] = "mistral"
         
         if adapter_id:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_loras"] = 1
             
         llm = LLM(**llm_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # Pass trust_remote_code=True here so the tokenizer can compile local configuration scripts
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         
         templated_inputs = []
         for prompt_item in evaluation_set:
@@ -121,6 +120,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             print(out.outputs[0].text.strip())
             
     except Exception as e:
+        # Re-raising the error during debugging can help identify if any alternate issues occur
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
         generated_responses = ["" for _ in evaluation_set]
         
