@@ -2,16 +2,22 @@
 # --- spike.sh ---
 set -e
 
-echo "📦 Mapping Virtual Environment paths on CUDA 13..."
+echo "📦 Mapping Axolotl Python 3.12 Virtual Environment..."
 export VIRTUAL_ENV="/workspace/axolotl-venv"
 export PATH="/workspace/axolotl-venv/bin:$PATH"
 
-echo "📥 Installing mainstream vLLM stack from PyPI..."
-# No overrides, no github wheels, no extra-index URLs. Pure automation.
+echo "🐍 Running Pre-Install Hardware Handshake..."
+python src/check_gpu.py
+
+echo "📥 Installing standard production vLLM from PyPI..."
+# No overrides, no custom wheels. Native, clean compilation.
 uv pip install vllm transformers
 
-# Suppress asynchronous multiprocess deadlocks across the multi-GPU setup
+echo "🐍 Running Post-Install Hardware Handshake..."
+python src/check_gpu.py
+
+# Prevent multi-GPU worker initialization deadlocks
 export VLLM_WORKER_MULTIPROC_METHOD="spawn"
 
-echo "🚀 Environment natively unified. Launching inference spike..."
+echo "🎯 Environment fully unified. Launching text generation spike..."
 python src/spike.py
