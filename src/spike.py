@@ -113,12 +113,12 @@ def main():
         #     4096,
         #     None  # No adapter required
         # ),
-        (
-            "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
-            "awq", 
-            4096,
-            None  # No adapter required
-        ),
+        # (
+        #     "cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", 
+        #     "awq", 
+        #     4096,
+        #     None  # No adapter required
+        # ),
         (
             "meta-llama/Llama-3.1-8B-Instruct", 
             None, # Full unquantized 16-bit precision mode
