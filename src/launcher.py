@@ -61,32 +61,39 @@ def pre_download_models(pipeline_configs):
 
 def generate_runtime_deepspeed(output_json_path: str):
     """
-    Compiles a highly optimized, low-overhead DeepSpeed Stage 3 configuration blueprint.
-    Hard-caps bucket and threshold variables to stop massive 4GB memory spikes on large models.
+    Reads the base Axolotl ZeRO-3 template, injects long-prompt activation partitioning,
+    and locks offloading to 'none' to bypass massive system host RAM dependencies.
     """
-    ds_dict = {
-        "bf16": {"enabled": True},
-        "zero_optimization": {
-            "stage": 3,
-            "offload_optimizer": {"device": "none"},
-            "offload_param": {"device": "none"},
-            "overlap_comm": True,
-            "contiguous_gradients": True,
-            
-            # FIXED HARD-CAPS: Replaced "auto" thresholds with strict 50MB limitations.
-            # This stops DeepSpeed from trying to allocate massive 4.00 GiB communication 
-            # buffers for the 119B parameter model, clearing the initialization OOM crash.
-            "reduce_bucket_size": 50000000,
-            "stage3_prefetch_bucket_size": 50000000,
-            "stage3_param_persistence_threshold": 1000000,
-            
-            "gather_16bit_weights_on_model_save": True
-        },
-        "activation_checkpointing": {
-            "partition_activations": True,
-            "contiguous_memory_optimization": True,
-            "cpu_checkpointing": False
+    source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
+    
+    if os.path.exists(source_ds_path):
+        with open(source_ds_path, "r", encoding="utf-8") as f:
+            ds_dict = json.load(f)
+    else:
+        # Fallback template design layout context block
+        ds_dict = {
+            "bf16": {"enabled": True},
+            "zero_optimization": {
+                "stage": 3,
+                "offload_optimizer": {"device": "none"},
+                "offload_param": {"device": "none"},
+                "overlap_comm": True,
+                "contiguous_gradients": True,
+                "reduce_bucket_size": "auto",
+                "stage3_prefetch_bucket_size": "auto"
+            }
         }
+
+    # Enforce strict Stage 3 parameter sharding across all pipeline targets
+    ds_dict["zero_optimization"]["stage"] = 3
+    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
+    ds_dict["zero_optimization"]["offload_param"] = {"device": "none"}
+
+    # Inject Activation Partitioning (Crucial to process 10k+ token sequences)
+    ds_dict["activation_checkpointing"] = {
+        "partition_activations": True,
+        "contiguous_memory_optimization": True,
+        "cpu_checkpointing": False
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -97,29 +104,30 @@ def generate_runtime_deepspeed(output_json_path: str):
 
 def run_training_job(config_path: str, num_gpus: int, run_id: str):
     """
-    Loads YAML parameters, binds the DeepSpeed profile, and launches the execution engine.
+    Loads custom hyperparameters directly from your YAML assets, 
+    injects runtime deepspeed hooks, and fires up the accelerate launcher.
     """
     print("\n" + "="*60)
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
     print("="*60, flush=True)
 
-    # Merge target YAML parameters
+    # Merge target YAML values cleanly without manual code modifications
     merged_cfg = merge_configs("config/base.yml", config_path)
 
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    # Enforce long-prompt parameters directly
+    # Enforce standard runtime long-prompt overrides
     merged_cfg["micro_batch_size"] = 1
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # Link the compiled Stage 3 DeepSpeed configuration
+    # Generate and bind the unified Stage 3 DeepSpeed layout configuration file
     generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
-    # Save the finalized temporary configuration file
+    # Save the finalized configuration path for Axolotl to consume
     OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
 
     output_dir = str(merged_cfg.get("output_dir", f"/app/output/adapter/{config_filename}"))
@@ -130,7 +138,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         print(f"\n[SKIP] EVAL=true and valid adapter discovered at '{output_dir}'. Bypassing training pass.")
         return output_dir, merged_cfg
 
-    # Formulate the multi-GPU launch execution command
+    # Formulate the multi-GPU launch execution array command
     cmd = [
         "accelerate", "launch",
         "--multi_gpu",
@@ -150,10 +158,13 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         sys.exit(1)
 
 def main():
-    # Apply memory allocations globally
+    # Apply memory segmentation allocations globally before execution hooks begin
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
-    # Enforce homogeneous communication paths to prevent topology locks
+    # Deactivate the experimental vLLM V1 graph compiler for child evaluation tasks
+    os.environ["VLLM_USE_V1"] = "0"
+
+    # Enforce homogeneous communication paths across the 4x L40S cluster nodes.
     print("🛡️  Enforcing uniform NCCL distributed communication transport paths...")
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
@@ -167,10 +178,11 @@ def main():
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     TRAINING_PIPELINE = [
-        "config/train-mistral4small.yml"
-        "config/train-gemma4.yml",
+        "config/train-mistral4small.yml",
+        "config/train-gemma4.yml"
     ]
     
+    # Pre-download models in a single process to build out local disk structures smoothly
     pre_download_models(TRAINING_PIPELINE)
     
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -206,7 +218,7 @@ def main():
             subprocess.run(["python", "src/evaluation.py"], check=True)
             print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
         except subprocess.CalledProcessError as e:
-            print(f"\n❌ [ERROR] Evaluation phase terminated with exit code {e.returncode}")
+            print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
             sys.exit(1)
 
 if __name__ == "__main__":
