@@ -160,6 +160,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
 def main():
     # Apply memory segmentation allocations globally before execution hooks begin
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # deprecated but still mentioned in error messages
 
     # Deactivate the experimental vLLM V1 graph compiler for child evaluation tasks
     os.environ["VLLM_USE_V1"] = "0"
@@ -178,8 +179,8 @@ def main():
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     TRAINING_PIPELINE = [
-        "config/train-mistral4small.yml",
-        "config/train-gemma4.yml"
+        # "config/train-mistral4small.yml",
+        "config/train-gemma4.yml",
     ]
     
     # Pre-download models in a single process to build out local disk structures smoothly
