@@ -7,6 +7,8 @@ load_in_8bit: false
 load_in_4bit: true                      # Enable: Compresses the unquantized base down to 4-bit slots
 qlora_sharded_model_loading: true       # Mandatory: Shards the 119B weights to fit 4x L40S layout
 
+sequence_len: 8192
+
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template
