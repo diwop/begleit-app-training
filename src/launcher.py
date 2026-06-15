@@ -61,7 +61,7 @@ def pre_download_models(pipeline_configs):
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
 
-def generate_runtime_deepspeed(output_json_path: str, flash_attn: bool):
+def generate_runtime_deepspeed(output_json_path: str, has_native_flash_attn: bool):
     """
     Reads the base Axolotl ZeRO-3 template, dynamically scales activation partitioning
     and optimizer offloading based on FlashAttention availability to prevent memory overhead.
@@ -93,7 +93,7 @@ def generate_runtime_deepspeed(output_json_path: str, flash_attn: bool):
     # -------------------------------------------------------------------------
     # DYNAMIC HARDWARE MEMORY MANAGEMENT LAYER
     # -------------------------------------------------------------------------
-    if not flash_attn:
+    if not has_native_flash_attn:
         # Fail-safe mode: Offload tracking states to host RAM to survive quadratic SDPA allocations
         ds_dict["zero_optimization"]["offload_optimizer"] = {
             "device": "cpu",
@@ -160,7 +160,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         print("🚀 Utilizing Stage 3 host streaming to bypass expert initialization spikes...")
 
     # Generate and link the unified VRAM-centric DeepSpeed configuration file
-    generate_runtime_deepspeed(runtime_ds_path, flash_attn)
+    generate_runtime_deepspeed(runtime_ds_path, has_native_flash_attn)
     merged_cfg["deepspeed"] = runtime_ds_path
 
     # Save the resolved, finalized configuration path for Axolotl to consume
