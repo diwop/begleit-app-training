@@ -1,5 +1,7 @@
 # --- src/evaluation.py ---
+from asyncio import coroutines
 import os
+import re
 import gc
 import sys
 import json
@@ -68,21 +70,30 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "gpu_memory_utilization": 0.82
         }
 
-        # FIX: Force text-only mapping AND explicit tokenizer routing rules for Mistral Small 4
+        # Force text-only mapping AND explicit tokenizer routing rules for Mistral Small 4
         if "mistral" in model_id.lower():
             print("🛑 Disabling vision profiling modalities for text-only pipeline...")
             llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
             print("⚙️  Activating specialized Mistral tokenizer backend...")
             llm_kwargs["tokenizer_mode"] = "mistral"
-        
+
         if adapter_id:
             llm_kwargs["enable_lora"] = True
             llm_kwargs["max_loras"] = 1
             
         llm = LLM(**llm_kwargs)
         
-        # FIX: Pass trust_remote_code=True here so the tokenizer can compile local configuration scripts
+        # Pass trust_remote_code=True here so the tokenizer can compile local configuration scripts
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+        # Configure reasoning variables for supporting models
+        chat_template_kwargs = {}
+        if "gemma" in model_id.lower() or "mistral" in model_id.lower():
+            print(f"Activating offline deep reasoning mode for: {model_id}")
+            chat_template_kwargs = {
+                "enable_thinking": True,   # Activates the Gemma 4 reasoning channel
+                "reasoning_effort": "high" # Activates the Mistral Small 4 reasoning channel
+            }
         
         templated_inputs = []
         for prompt_item in evaluation_set:
@@ -93,7 +104,8 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             full_string = tokenizer.apply_chat_template(
                 messages, 
                 tokenize=False, 
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                chat_template_kwargs=chat_template_kwargs
             )
             templated_inputs.append(full_string)
             
@@ -112,12 +124,31 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         outputs = llm.generate(templated_inputs, sampling_params, **generate_kwargs)
         
         for out in outputs:
-            generated_responses.append(out.outputs[0].text.strip())
+            raw_text = out.outputs[0].text.strip()
+            reasoning_trace = ""
             
-    except Exception as e:
-        # Re-raising the error during debugging can help identify if any alternate issues occur
+            # Inspect native vLLM engine attributes if populated programmatically
+            if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
+                reasoning_trace = out.outputs[0].reasoning.strip()
+            elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
+                reasoning_trace = out.outputs[0].reasoning_content.strip()
+            
+            # Fallback inline XML tag interception for offline generator streams
+            think_match = re.search(r"<(?:think|thought)>(.*?)</(?:think|thought)>", raw_text, re.DOTALL)
+            if think_match:
+                if not reasoning_trace:
+                    reasoning_trace = think_match.group(1).strip()
+                    
+                # CRITICAL: Clean the thought block out of the final text response payload.
+                # This protects textstat metrics from being skewed by ungrammatical token strings.
+                raw_text = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", raw_text, flags=re.DOTALL).strip()
+                
+            # Append as a tuple so metrics loop can map both outputs cleanly
+            generated_responses.append((raw_text, reasoning_trace))
+            
+except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
-        generated_responses = ["" for _ in evaluation_set]
+        generated_responses = [("", "") for _ in evaluation_set]
         
     finally:
         print(f"♻️ Evacuating VRAM channels for next model tracking...", flush=True)
@@ -127,15 +158,11 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         except Exception:
             pass
             
-        try:
-            destroy_model_parallel()
-        except Exception:
-            pass
+        try: destroy_model_parallel()
+        except Exception: pass
             
-        if 'llm' in locals():
-            del llm
-        if 'tokenizer' in locals():
-            del tokenizer
+        if 'llm' in locals(): del llm
+        if 'tokenizer' in locals(): del tokenizer
             
         gc.collect()
         torch.cuda.empty_cache()
@@ -145,15 +172,14 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     return generated_responses
 
 def main():
+    os.environ["VLLM_USE_V1"] = "0"
+    
     print("📋 Validating structural configurations...", flush=True)
-    if not os.path.exists("data/system-prompt.md"):
-        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/system-prompt.md' is missing.")
-    if not os.path.exists("data/prompt-template.md"):
-        raise FileNotFoundError("❌ Pipeline Failure: Configuration file 'data/prompt-template.md' is missing.")
+    if not os.path.exists("data/system-prompt.md") or not os.path.exists("data/prompt-template.md"):
+        raise FileNotFoundError("❌ Pipeline Failure: Configuration blueprint files are missing.")
 
     with open("data/system-prompt.md", "r", encoding="utf-8") as f:
         global_system_prompt = f.read().strip()
-        
     with open("data/prompt-template.md", "r", encoding="utf-8") as f:
         global_template = f.read()
 
@@ -171,7 +197,7 @@ def main():
     # PART 2: APPEND REGULAR UNTAGGED TEST PROMPTS
     original_test_prompts = [
         "Warum ist der Himmel blau und nicht schwarz?",
-        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg. Hausärztinnen haben in der Landeshauptstadt einen Anteil von 77,5 Prozent, wie aus einer Auswertung der Kassenärztlichen Bundesvereinigung (KBV) hervorgeht. Auf Magdeburg folgen in den Top 3 der Ilm-Kreis (76,2 Prozent) und das Altenburger Land (74,1 Prozent) in Thüringen.\n\nIn Sachsen-Anhalt insgesamt liegt der Anteil der Ärztinnen bei 58,7 Prozent und damit im bundesweiten Vergleich recht hoch. Berlin hat den höchsten Ärztinnen-Anteil mit 60,2 Prozent, gefolgt von Hamburg und Sachsen mit je 58,9 Prozent. Schlusslicht ist das Saarland mit 47,5 Prozent."
+        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg..."
     ]
     
     for text_block in original_test_prompts:
@@ -189,18 +215,12 @@ def main():
         print(f"📥 Parsing tuning records from: {jsonl_path}")
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line_number, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
+                if not line.strip(): continue
                 entry = json.loads(line)
                 prompt_id = str(entry.get("id", "")).strip()
-                if not prompt_id:
-                    raise KeyError(f"❌ Dataset Corruption: Missing 'id' field in {jsonl_path} on line {line_number}.")
                 
-                orig_base_path = f"data/raw/{prompt_id}_Standardsprache"
-                ref_base_path = f"data/raw/{prompt_id}_Leichte_Sprache"
-                
-                orig_content = read_file_with_extensions(orig_base_path)
-                ref_content = read_file_with_extensions(ref_base_path)
+                orig_content = read_file_with_extensions(f"data/raw/{prompt_id}_Standardsprache")
+                ref_content = read_file_with_extensions(f"data/raw/{prompt_id}_Leichte_Sprache")
                 
                 evaluation_set.append({
                     "is_integrity": False,
@@ -219,20 +239,15 @@ def main():
     if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
-    # REFACTORED MATRIX: Dynamically add baseline and adapter entries side-by-side
     EVALUATION_PIPELINE = []
-
-    # A. Mistral Small 4 Matrix Layers
     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
     if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
-    # B. Gemma 4 Matrix Layers
     EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, gemma_adapter))
 
-    # C. Llama 3.1 Schomacker et. al. Challenger
     EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
     output_json = {
@@ -242,6 +257,7 @@ def main():
         "prompts": []
     }
     
+    # Pre-populate matrix rows with uniform 4-element columns [Text, FRE, WSTF, Reasoning]
     for item in evaluation_set:
         record = {}
         if item["is_integrity"]:
@@ -249,21 +265,22 @@ def main():
             record["template"] = ""
             
         input_fre, input_wstf = get_raw_metrics(item["original_user"])
-        record["r"] = [[item["original_user"], input_fre, input_wstf]]
+        # Source inputs default to an empty reasoning string
+        record["r"] = [[item["original_user"], input_fre, input_wstf, ""]]
         output_json["prompts"].append(record)
 
     # Cascade Batch Inference through registered models
     for model_id, quant_type, max_len, adapter_id in EVALUATION_PIPELINE:
         display_name = model_id
-        if adapter_id:
-            display_name += f" ({adapter_id})"
+        if adapter_id: display_name += f" ({adapter_id})"
         output_json["models"].append(display_name)
         
         responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
         
-        for idx, text_response in enumerate(responses):
+        for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
-            output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf])
+            # Append full response data metrics array directly
+            output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf, reasoning_trace])
 
     # POST-PROCESSING: Append tuning ground truth references
     print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
@@ -271,7 +288,8 @@ def main():
         if item["reference_text"] is not None:
             ref_txt = item["reference_text"]
             ref_fre, ref_wstf = get_raw_metrics(ref_txt)
-            output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf])
+            # Ground truth targets default to an empty reasoning string
+            output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf, ""])
 
     # Output Serialization and S3 Upload
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
@@ -290,39 +308,19 @@ def main():
             print(f"❌ Failed to transfer to S3 destination: {s3_err}\nSaving local copy as fallback...")
             with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
     else:
-        print("⚠️ S3_BUCKET environment variable missing. Saving locally...")
         with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
         print(f"💾 Written to local file system: {filename}")
 
 def apply_vllm_mla_hotfix():
-    """
-    Automated hotfix patch for an active vLLM regression (Issue #43263).
-    Safely modifies the local site-packages file to fix the AWQ prefill crash.
-    """
+    """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
     target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
-    
     if os.path.exists(target_file):
-        print("⚙️  Checking vLLM attention source files for AWQ compatibility bugs...")
-        with open(target_file, "r", encoding="utf-8") as f:
-            code = f.read()
-            
+        with open(target_file, "r", encoding="utf-8") as f: code = f.read()
         broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
         fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
-        
         if broken_string in code:
-            print("🩹 Applying official regression patch for Issue #43263...")
-            patched_code = code.replace(broken_string, fixed_string)
-            with open(target_file, "w", encoding="utf-8") as f:
-                f.write(patched_code)
-            print("✅ Patch successfully compiled into virtual environment assets!")
-        else:
-            print("ℹ️  vLLM source file is already secure or patch was previously applied.")
-    else:
-        print("ℹ️  Alternative vLLM environment setup discovered. Bypassing hotfix layer.")
+            with open(target_file, "w", encoding="utf-8") as f: f.write(code.replace(broken_string, fixed_string))
 
 if __name__ == "__main__":
-
-    # Trigger the automated patch check before any vLLM initialization begins
     apply_vllm_mla_hotfix()
-
     main()
