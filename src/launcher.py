@@ -61,10 +61,11 @@ def pre_download_models(pipeline_configs):
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
 
-def generate_runtime_deepspeed(output_json_path: str, has_native_flash_attn: bool):
+def generate_runtime_deepspeed(output_json_path: str) -> str:
     """
-    Reads the base Axolotl ZeRO-3 template, dynamically scales activation partitioning
-    and optimizer offloading based on FlashAttention availability to prevent memory overhead.
+    Reads the base Axolotl ZeRO-3 template and injects a high-performance, 
+    zero-latency local VRAM policy. All parameters, activations, and optimizer 
+    states are kept local to the GPU to maximize throughput.
     """
     source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
     
@@ -72,7 +73,7 @@ def generate_runtime_deepspeed(output_json_path: str, has_native_flash_attn: boo
         with open(source_ds_path, "r", encoding="utf-8") as f:
             ds_dict = json.load(f)
     else:
-        # Fallback template design layout context block
+        # Fallback structural configuration blueprint
         ds_dict = {
             "bf16": {"enabled": True},
             "zero_optimization": {
@@ -86,32 +87,18 @@ def generate_runtime_deepspeed(output_json_path: str, has_native_flash_attn: boo
             }
         }
 
-    # Enforce strict Stage 3 parameter sharding across all pipeline targets
+    # Enforce strict Stage 3 parameter sharding across distributed nodes
     ds_dict["zero_optimization"]["stage"] = 3
+    
+    # MAXIMUM SPEED: Keep all parameters and optimizer states in GPU VRAM
+    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
     ds_dict["zero_optimization"]["offload_param"] = {"device": "none"}
 
-    # -------------------------------------------------------------------------
-    # DYNAMIC HARDWARE MEMORY MANAGEMENT LAYER
-    # -------------------------------------------------------------------------
-    if not has_native_flash_attn:
-        # Fail-safe mode: Offload tracking states to host RAM to survive quadratic SDPA allocations
-        ds_dict["zero_optimization"]["offload_optimizer"] = {
-            "device": "cpu",
-            "pin_memory": True
-        }
-        cpu_checkpointing_policy = True
-    else:
-        # High-performance mode: Keep all calculations inside local sharded VRAM to maximize speed
-        ds_dict["zero_optimization"]["offload_optimizer"] = {
-            "device": "none"
-        }
-        cpu_checkpointing_policy = False
-
-    # Inject Activation Partitioning (Crucial to process 10k+ token sequences)
+    # Inject Long-Context Activation Protection without slow PCIe-to-CPU swaps
     ds_dict["activation_checkpointing"] = {
         "partition_activations": True,
         "contiguous_memory_optimization": True,
-        "cpu_checkpointing": cpu_checkpointing_policy
+        "cpu_checkpointing": False
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -120,47 +107,43 @@ def generate_runtime_deepspeed(output_json_path: str, has_native_flash_attn: boo
     print(f"✅ DeepSpeed Stage 3 configuration compiled successfully at: {output_json_path}")
     return output_json_path
 
-def run_training_job(config_path: str, num_gpus: int, run_id: str):
+def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str, dict]:
     """
-    Loads YAML parameters, dynamically binds DeepSpeed and Attention backends,
-    and launches the execution engine.
+    Loads YAML parameters, dynamically binds runtime DeepSpeed assets,
+    and launches the distributed training execution engine.
     """
     print("\n" + "="*60)
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
     print("="*60, flush=True)
 
+    # Ingest core configuration parameters across the inheritance layer
     merged_cfg = merge_configs("config/base.yml", config_path)
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    merged_cfg["micro_batch_size"] = 1
-    merged_cfg["gradient_accumulation_steps"] = 8
-    merged_cfg["sample_packing"] = True
-    
-    # Environment Introspection: Check for native FlashAttention (L40S)
-    try:
-        import flash_attn
-        has_native_flash_attn = True
-    except ImportError:
-        has_native_flash_attn = False
-
+    # -------------------------------------------------------------------------
+    # HARDWARE & ARCHITECTURE RUNTIME SAFEGUARDS
+    # -------------------------------------------------------------------------
     if "gemma" in config_path.lower():
-        print("💡 Gemma 4 (26B) detected: Utilizing native unquantized bfloat16 base + Stage 3 LoRA...")
-        # Dynamic attention backend detection
-        if not has_native_flash_attn:
-            print("⚠️  Native 'flash_attn' wheel not found! Forcing PyTorch SDPA backend to prevent A100 256-head dimension crashes.")
-            merged_cfg["attn_implementation"] = "sdpa"
-            if "flash_attention" in merged_cfg:
-                del merged_cfg["flash_attention"]
-        else:
-            print("⚡ Native 'flash_attn' detected. Proceeding with high-performance FlashAttention-2.")
+        print("💡 Gemma 4 (26B) detected: Enforcing native unquantized bfloat16 base + Stage 3 LoRA...")
+        merged_cfg["adapter"] = "lora"
+        merged_cfg["load_in_8bit"] = False
+        merged_cfg["load_in_4bit"] = False
+        merged_cfg["qlora_sharded_model_loading"] = False
     else:
         print("💡 Mistral Small 4 (119B) detected: Model is natively pre-quantized in FP8!")
         print("🚀 Utilizing Stage 3 host streaming to bypass expert initialization spikes...")
+        merged_cfg["adapter"] = "lora"
+        merged_cfg["load_in_8bit"] = False
+        merged_cfg["load_in_4bit"] = False
+        merged_cfg["qlora_sharded_model_loading"] = False
+
+    # Enforce high-performance FlashAttention-2 backend globally
+    merged_cfg["attn_implementation"] = "flash_attention_2"
 
     # Generate and link the unified VRAM-centric DeepSpeed configuration file
-    generate_runtime_deepspeed(runtime_ds_path, has_native_flash_attn)
+    generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
     # Save the resolved, finalized configuration path for Axolotl to consume

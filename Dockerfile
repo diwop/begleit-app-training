@@ -32,7 +32,9 @@ RUN --mount=type=cache,target=/app/uv_cache \
 
 # Install vllm separately
 RUN --mount=type=cache,target=/app/uv_cache \
-    uv pip install vllm
+    uv pip install packaging ninja && \
+    uv pip install vllm && \
+    FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE uv pip install flash-attn --no-build-isolation
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
