@@ -43,18 +43,20 @@ def pre_download_models(pipeline_configs):
         base_model_str = str(merged_cfg.get("base_model", "")).strip()
         
         if base_model_str and base_model_str not in processed_models:
-            print(f"📦 Verifying local file mapping for: '{base_model_str}'...", flush=True)
+            print(f"📦 Invoking native hf engine for: '{base_model_str}'...", flush=True)
             try:
-                snapshot_download(
-                    repo_id=base_model_str,
-                    token=token,
-                    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.pt"]
-                )
+                # Build the native shell execution array
+                cmd = ["hf", "download", base_model_str]
+                
+                # Execute the standalone downloader. It automatically 
+                # picks up the HF_TOKEN from the environment variables.
+                subprocess.run(cmd, check=True)
+                
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
                 processed_models.add(base_model_str)
-            except Exception as e:
-                print(f"\n❌ CRITICAL: Failed to cache weights for {base_model_str}!")
-                print(f"Error Source: {e}")
+            except subprocess.CalledProcessError as e:
+                print(f"\n❌ CRITICAL: Native 'hf' tool failed to download {base_model_str}!")
+                print(f"Exit Code: {e.returncode}")
                 sys.exit(1)
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
