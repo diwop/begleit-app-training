@@ -11,7 +11,8 @@ LOG_FILE="/app/training_run.log"
 # Enable debugging
 export NCCL_DEBUG=INFO
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
-export RUST_LOG=debug # hf_transfer
+export HF_HUB_ENABLE_HF_TRANSFER=0
+export HF_HUB_VERBOSITY=debug
 
 echo "=== Repository Execution Started ==="
 echo "Logs will be saved to: $LOG_FILE"
