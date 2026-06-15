@@ -11,6 +11,7 @@ LOG_FILE="/app/training_run.log"
 # Enable debugging
 export NCCL_DEBUG=INFO
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
+export RUST_LOG=debug # hf_transfer
 
 echo "=== Repository Execution Started ==="
 echo "Logs will be saved to: $LOG_FILE"
@@ -46,7 +47,6 @@ fi
 set -e
 
 # Handle lifecycle, S3 sync & (optional) RunPod shutdown
-
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Training completed successfully!"
 else
