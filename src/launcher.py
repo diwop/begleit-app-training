@@ -104,30 +104,48 @@ def generate_runtime_deepspeed(output_json_path: str):
 
 def run_training_job(config_path: str, num_gpus: int, run_id: str):
     """
-    Loads custom hyperparameters directly from your YAML assets, 
-    injects runtime deepspeed hooks, and fires up the accelerate launcher.
+    Loads YAML parameters, dynamically binds DeepSpeed and Attention backends,
+    and launches the execution engine.
     """
     print("\n" + "="*60)
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
     print("="*60, flush=True)
 
-    # Merge target YAML values cleanly without manual code modifications
     merged_cfg = merge_configs("config/base.yml", config_path)
-
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
-    # Enforce standard runtime long-prompt overrides
     merged_cfg["micro_batch_size"] = 1
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # Generate and bind the unified Stage 3 DeepSpeed layout configuration file
+    # Environment Introspection: Check for native FlashAttention
+    try:
+        import flash_attn
+        has_native_flash_attn = True
+    except ImportError:
+        has_native_flash_attn = False
+
+    if "gemma" in config_path.lower():
+        print("💡 Gemma 4 (26B) detected: Utilizing native unquantized bfloat16 base + Stage 3 LoRA...")
+        # Dynamic attention backend detection
+        if not has_native_flash_attn:
+            print("⚠️  Native 'flash_attn' wheel not found! Forcing PyTorch SDPA backend to prevent A100 256-head dimension crashes.")
+            merged_cfg["attn_implementation"] = "sdpa"
+            if "flash_attention" in merged_cfg:
+                del merged_cfg["flash_attention"]
+        else:
+            print("⚡ Native 'flash_attn' detected. Proceeding with high-performance FlashAttention-2.")
+    else:
+        print("💡 Mistral Small 4 (119B) detected: Model is natively pre-quantized in FP8!")
+        print("🚀 Utilizing Stage 3 host streaming to bypass expert initialization spikes...")
+
+    # Generate and link the unified VRAM-centric DeepSpeed configuration file
     generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
-    # Save the finalized configuration path for Axolotl to consume
+    # Save the resolved, finalized configuration path for Axolotl to consume
     OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
 
     output_dir = str(merged_cfg.get("output_dir", f"/app/output/adapter/{config_filename}"))

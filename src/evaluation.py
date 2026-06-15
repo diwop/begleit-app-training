@@ -1,4 +1,5 @@
 # --- src/evaluation.py ---
+from transformers.models.big_bird import modeling_big_bird
 from asyncio import coroutines
 import os
 import re
@@ -146,7 +147,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             # Append as a tuple so metrics loop can map both outputs cleanly
             generated_responses.append((raw_text, reasoning_trace))
             
-except Exception as e:
+    except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
         generated_responses = [("", "") for _ in evaluation_set]
         
