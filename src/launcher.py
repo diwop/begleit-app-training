@@ -61,10 +61,10 @@ def pre_download_models(pipeline_configs):
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
 
-def generate_runtime_deepspeed(output_json_path: str):
+def generate_runtime_deepspeed(output_json_path: str, flash_attn: bool):
     """
-    Reads the base Axolotl ZeRO-3 template, injects long-prompt activation partitioning,
-    and locks offloading to 'none' to bypass massive system host RAM dependencies.
+    Reads the base Axolotl ZeRO-3 template, dynamically scales activation partitioning
+    and optimizer offloading based on FlashAttention availability to prevent memory overhead.
     """
     source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
     
@@ -88,14 +88,30 @@ def generate_runtime_deepspeed(output_json_path: str):
 
     # Enforce strict Stage 3 parameter sharding across all pipeline targets
     ds_dict["zero_optimization"]["stage"] = 3
-    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
     ds_dict["zero_optimization"]["offload_param"] = {"device": "none"}
+
+    # -------------------------------------------------------------------------
+    # DYNAMIC HARDWARE MEMORY MANAGEMENT LAYER
+    # -------------------------------------------------------------------------
+    if not flash_attn:
+        # Fail-safe mode: Offload tracking states to host RAM to survive quadratic SDPA allocations
+        ds_dict["zero_optimization"]["offload_optimizer"] = {
+            "device": "cpu",
+            "pin_memory": True
+        }
+        cpu_checkpointing_policy = True
+    else:
+        # High-performance mode: Keep all calculations inside local sharded VRAM to maximize speed
+        ds_dict["zero_optimization"]["offload_optimizer"] = {
+            "device": "none"
+        }
+        cpu_checkpointing_policy = False
 
     # Inject Activation Partitioning (Crucial to process 10k+ token sequences)
     ds_dict["activation_checkpointing"] = {
         "partition_activations": True,
         "contiguous_memory_optimization": True,
-        "cpu_checkpointing": False
+        "cpu_checkpointing": cpu_checkpointing_policy
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -122,7 +138,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
     merged_cfg["gradient_accumulation_steps"] = 8
     merged_cfg["sample_packing"] = True
     
-    # Environment Introspection: Check for native FlashAttention
+    # Environment Introspection: Check for native FlashAttention (L40S)
     try:
         import flash_attn
         has_native_flash_attn = True
@@ -144,7 +160,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str):
         print("🚀 Utilizing Stage 3 host streaming to bypass expert initialization spikes...")
 
     # Generate and link the unified VRAM-centric DeepSpeed configuration file
-    generate_runtime_deepspeed(runtime_ds_path)
+    generate_runtime_deepspeed(runtime_ds_path, flash_attn)
     merged_cfg["deepspeed"] = runtime_ds_path
 
     # Save the resolved, finalized configuration path for Axolotl to consume
