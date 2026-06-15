@@ -109,8 +109,8 @@ def generate_runtime_deepspeed(output_json_path: str) -> str:
 
 def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str, dict]:
     """
-    Loads YAML parameters, dynamically binds runtime DeepSpeed assets,
-    and launches the distributed training execution engine.
+    Loads YAML parameters, binds unified runtime DeepSpeed assets, 
+    and launches the distributed training engine without model-specific hardcodes.
     """
     print("\n" + "="*60)
     print(f"🎬 INITIATING PIPELINE TRAINING JOB: {config_path}")
@@ -121,23 +121,6 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     config_filename = os.path.basename(config_path).replace(".yml", "").replace(".yaml", "")
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
-
-    # -------------------------------------------------------------------------
-    # HARDWARE & ARCHITECTURE RUNTIME SAFEGUARDS
-    # -------------------------------------------------------------------------
-    if "gemma" in config_path.lower():
-        print("💡 Gemma 4 (26B) detected: Enforcing native unquantized bfloat16 base + Stage 3 LoRA...")
-        merged_cfg["adapter"] = "lora"
-        merged_cfg["load_in_8bit"] = False
-        merged_cfg["load_in_4bit"] = False
-        merged_cfg["qlora_sharded_model_loading"] = False
-    else:
-        print("💡 Mistral Small 4 (119B) detected: Model is natively pre-quantized in FP8!")
-        print("🚀 Utilizing Stage 3 host streaming to bypass expert initialization spikes...")
-        merged_cfg["adapter"] = "lora"
-        merged_cfg["load_in_8bit"] = False
-        merged_cfg["load_in_4bit"] = False
-        merged_cfg["qlora_sharded_model_loading"] = False
 
     # Enforce high-performance FlashAttention-2 backend globally
     merged_cfg["attn_implementation"] = "flash_attention_2"

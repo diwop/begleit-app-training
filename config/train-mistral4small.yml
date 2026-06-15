@@ -1,11 +1,10 @@
 # --- config/train-mistral4small.yml ---
-base_model: axolotl-ai-co/Mistral-Small-4-119B-2603-BF16
+base_model: axolotl-ai-co/Mistral-Small-4-119B-2603-FP8
 
-adapter: qlora
-
+adapter: lora
 load_in_8bit: false
-load_in_4bit: true                      # Enable: Compresses the unquantized base down to 4-bit slots
-qlora_sharded_model_loading: true       # Mandatory: Shards the 119B weights to fit 4x L40S layout
+load_in_4bit: false
+qlora_sharded_model_loading: false
 
 datasets:
   - path: data/train/dataset.jsonl
