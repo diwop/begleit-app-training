@@ -28,7 +28,7 @@ extra_model_config_kwargs:
 datasets:
   - path: data/train/dataset.jsonl
     type: chat_template
-    chat_template: chatml
+    chat_template: tokenizer_default
     field_messages: messages
     message_property_mappings:
       role: role

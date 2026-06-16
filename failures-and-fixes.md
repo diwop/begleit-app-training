@@ -31,6 +31,11 @@
 ### Iteration 1: Setting up Mistral Small 4 (119B) FP8 on 4x L40S
 * **Approach**: Mistral-Small-4-119B-2603 is a 119B parameter model released natively in FP8 (`float8_e4m3fn`). Sharding this model across 4x L40S (4x 48GB VRAM) under ZeRO-3 results in 29.75 GB of sharded weights per GPU. Given 16K context activations, keeping weights on the GPU would lead to OOM. We apply our custom DeepSpeed CPU parameter and optimizer offloading (`deepspeed_offload_param: true`, `deepspeed_offload_optimizer: true`), CPU activation checkpointing (`deepspeed_cpu_checkpointing: true`), and Liger Kernel optimizations to run this 119B model efficiently on 4x L40S.
 
+### Iteration 2: Mistral Tokenizer Validation Failure
+* **Error**: `mistral_common.exceptions.InvalidMessageStructureException: Expected last role User or Tool (or Assistant with prefix or continue_final_message set to True) for serving but got assistant`
+* **What didn't work**: Using `chat_template: chatml` didn't bypass the error because the `MistralCommonTokenizer` delegates `apply_chat_template` to the `mistral-common` library validator, which strictly requires messages to end in `User` or `Tool` (for serving/inference). SFT training data naturally ends with the target `Assistant` response.
+* **Fix**: Added a monkeypatch in `src/train_patched.py` that replaces `apply_chat_template` of `MistralCommonTokenizer` and `TokenizersBackend` with `PreTrainedTokenizerBase.apply_chat_template`. This completely bypasses the `mistral-common` inference validator during training and routes the message formatting to the standard Jinja2 engine. Switched `chat_template` to `tokenizer_default` in `config/train-mistral4small.yml` to utilize the model's native instruct format (`<s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][MODEL_SETTINGS]...[/MODEL_SETTINGS][INST]...[/INST]...</s>`).
+
 # Evaluating
 
 ...
