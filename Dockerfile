@@ -30,11 +30,11 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN uv pip install torch --index-url https://download.pytorch.org/whl/cu130
 
 # Install build dependencies (needed for setuptools-rust or ninja-based compilations)
-RUN uv pip install packaging ninja setuptools-rust
+RUN uv pip install packaging ninja setuptools-rust setuptools wheel psutil
 
 # Install Axolotl with flash-attn and deepspeed (this compiles custom kernels)
 # Note: For now, sglang is omitted as requested.
-RUN uv pip install "axolotl[flash-attn,deepspeed] @ git+https://github.com/axolotl-ai-cloud/axolotl.git"
+RUN uv pip install --no-build-isolation "axolotl[flash-attn,deepspeed] @ git+https://github.com/axolotl-ai-cloud/axolotl.git"
 RUN uv pip install liger-kernel
 
 # Compile project-specific requirements

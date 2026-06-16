@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - slim-docker-image # TODO: remove before merge
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
               - 'uv.lock'
 
   build-docker-image:
-    name: Build and push Docker image
+    name: Build Docker image
     needs: detect-changes
     # Run ONLY IF docker image changed or if the user manually triggered the workflow
     if: needs.detect-changes.outputs.docker_files != '' || github.event_name == 'workflow_dispatch'
@@ -64,6 +64,8 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Show Image Size
         run: |
           IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
@@ -82,6 +84,7 @@ jobs:
             --entrypoint python \
             $IMAGE_NAME tests/container_smoke_test.py
       - name: Push Docker image to GHCR
+        if: github.event_name != 'pull_request'
         run: |
           for tag in ${{ steps.meta.outputs.tags }}; do
             echo "Pushing $tag..."
