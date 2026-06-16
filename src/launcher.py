@@ -166,12 +166,18 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         sys.exit(1)
 
 def main():
+
+    # Eliminate CPU management thread bloat across multi-GPU ranks
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+
     # Apply memory segmentation allocations globally before execution hooks begin
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # deprecated but still mentioned in error messages
 
-    # Deactivate the experimental vLLM V1 graph compiler for child evaluation tasks
+    # Prevent vLLM multi-GPU deadlocks caused by master process CUDA leaks
     os.environ["VLLM_USE_V1"] = "0"
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn" # CRITICAL for parent-child CUDA isolation
 
     # Enforce homogeneous communication paths across the 4x L40S cluster nodes.
     print("🛡️  Enforcing uniform NCCL distributed communication transport paths...")
