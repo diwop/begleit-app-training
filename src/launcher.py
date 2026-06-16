@@ -61,11 +61,16 @@ def pre_download_models(pipeline_configs):
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
 
-def generate_runtime_deepspeed(output_json_path: str) -> str:
+def generate_runtime_deepspeed(
+    output_json_path: str,
+    cpu_checkpointing: bool = False,
+    offload_optimizer: bool = False,
+    offload_param: bool = False,
+    param_persistence_threshold: str = "auto"
+) -> str:
     """
     Reads the base Axolotl ZeRO-3 template and injects a high-performance, 
-    zero-latency local VRAM policy. All parameters, activations, and optimizer 
-    states are kept local to the GPU to maximize throughput.
+    local VRAM policy or offloads states to CPU if requested to avoid OOM.
     """
     source_ds_path = "/workspace/axolotl/deepspeed_configs/zero3_bf16.json"
     
@@ -90,21 +95,31 @@ def generate_runtime_deepspeed(output_json_path: str) -> str:
     # Enforce strict Stage 3 parameter sharding across distributed nodes
     ds_dict["zero_optimization"]["stage"] = 3
     
-    # MAXIMUM SPEED: Keep all parameters and optimizer states in GPU VRAM
-    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "none"}
-    ds_dict["zero_optimization"]["offload_param"] = {"device": "none"}
+    # Optimizer and parameter offloading configurations
+    ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "cpu" if offload_optimizer else "none"}
+    ds_dict["zero_optimization"]["offload_param"] = {"device": "cpu" if offload_param else "none"}
+    
+    # Parameter sharding threshold configuration (useful for MoE expert models)
+    if param_persistence_threshold == "0" or param_persistence_threshold == 0:
+        ds_dict["zero_optimization"]["stage3_param_persistence_threshold"] = 0
+    else:
+        try:
+            val = int(param_persistence_threshold)
+            ds_dict["zero_optimization"]["stage3_param_persistence_threshold"] = val
+        except (ValueError, TypeError):
+            ds_dict["zero_optimization"]["stage3_param_persistence_threshold"] = "auto"
 
-    # Inject Long-Context Activation Protection without slow PCIe-to-CPU swaps
+    # Inject Long-Context Activation Protection
     ds_dict["activation_checkpointing"] = {
         "partition_activations": True,
         "contiguous_memory_optimization": True,
-        "cpu_checkpointing": False
+        "cpu_checkpointing": cpu_checkpointing
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(ds_dict, f, indent=2)
         
-    print(f"✅ DeepSpeed Stage 3 configuration compiled successfully at: {output_json_path}")
+    print(f"✅ DeepSpeed Stage 3 configuration compiled successfully at: {output_json_path} (cpu_checkpointing={cpu_checkpointing}, offload_optimizer={offload_optimizer}, offload_param={offload_param}, param_persistence_threshold={ds_dict['zero_optimization']['stage3_param_persistence_threshold']})")
     return output_json_path
 
 def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str, dict]:
@@ -132,8 +147,20 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     if "attn_implementation" not in merged_cfg:
         merged_cfg["attn_implementation"] = "flash_attention_2"
 
-    # Generate and link the unified VRAM-centric DeepSpeed configuration file
-    generate_runtime_deepspeed(runtime_ds_path)
+    # Extract DeepSpeed tuning settings from Axolotl YAML if configured
+    cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
+    offload_optimizer = merged_cfg.get("deepspeed_offload_optimizer", False)
+    offload_param = merged_cfg.get("deepspeed_offload_param", False)
+    param_persistence_threshold = merged_cfg.get("deepspeed_param_persistence_threshold", "auto")
+
+    # Generate and link the DeepSpeed configuration file
+    generate_runtime_deepspeed(
+        runtime_ds_path,
+        cpu_checkpointing=bool(cpu_checkpointing),
+        offload_optimizer=bool(offload_optimizer),
+        offload_param=bool(offload_param),
+        param_persistence_threshold=param_persistence_threshold
+    )
     merged_cfg["deepspeed"] = runtime_ds_path
 
     if not merged_cfg.get("output_dir"):

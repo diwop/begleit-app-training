@@ -12,7 +12,8 @@ dependencies = [
     "awscli",
     "boto3",
     "transformers",
-    "mistral_common>=1.11.0"
+    "mistral_common>=1.11.0",
+    "liger-kernel"
 ]
 
 [build-system]

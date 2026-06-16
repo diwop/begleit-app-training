@@ -19,6 +19,10 @@
 * **What didn't work**: Using pure `sdpa` attention implementation fallback. Standard attention materialization for global layers (head dim 512) left too little VRAM free before the final loss layer. Upcasting logits to float32 (`logits.float()`) at 16k or 10.8k context requires 10-16 GB of memory, causing OOM.
 * **Fix**: Enabled `gemma4_hybrid_attn_impl: true` in `config/train-gemma4.yml` and reverted to `flash_attention_2` (default). This uses high-performance Flash Attention 2 on sliding-window layers (head dim 256) and falls back to SDPA only on global layers (head dim 512), dramatically reducing peak VRAM usage and allowing 16K max context length to fit and train on 2x L40S.
 
+### Iteration 4: CUDA Out of Memory (OOM) during SDPA forward pass at 16K context
+* **Error**: `torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.55 GiB. GPU 1 has a total capacity of 44.39 GiB of which 71.31 MiB is free.`
+* **What didn't work**: On a 2x L40S cluster, sharding model weights under ZeRO-3 leaves ~18.6 GB of free VRAM per GPU. During the forward pass at 16K context, the SDPA attention fallback on Gemma 4's global layers (head dim 512) and the massive activations memory footprint exhausted the remaining GPU VRAM, leading to OOM before logits/loss computation could even start. Additionally, DeepSpeed's default `stage3_param_persistence_threshold: "auto"` leaves smaller MoE expert modules replicated rather than sharded.
+* **Fix**: Added `liger-kernel` to dependencies in `pyproject.toml` and enabled it in `config/train-gemma4.yml` to optimize activation memory (and completely eliminate logits upcasting allocation). Enabled DeepSpeed CPU activation checkpointing (`deepspeed_cpu_checkpointing: true`) to offload activation checkpoints to CPU RAM. Set `deepspeed_param_persistence_threshold: 0` to force sharding of all parameters (such as MoE expert parameters) across the GPUs. Made these DeepSpeed settings customizable via the launcher.
 
 
 ## Mistral
