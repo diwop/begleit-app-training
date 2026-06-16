@@ -1,5 +1,19 @@
 # --- config/train-mistral4small.yml ---
 base_model: mistralai/Mistral-Small-4-119B-2603
+# DeepSpeed Memory & Sharding Optimizations
+deepspeed_cpu_checkpointing: true
+deepspeed_param_persistence_threshold: 0
+deepspeed_offload_param: true
+deepspeed_offload_optimizer: true
+
+# Liger Kernel Memory & Speed Optimizations
+plugins:
+  - axolotl.integrations.liger.LigerPlugin
+liger_rope: true
+liger_rms_norm: true
+liger_glu_activation: true
+liger_layer_norm: true
+liger_fused_linear_cross_entropy: true
 
 adapter: lora
 load_in_8bit: false

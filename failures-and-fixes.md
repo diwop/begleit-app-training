@@ -28,7 +28,8 @@
 
 ## Mistral
 
-...
+### Iteration 1: Setting up Mistral Small 4 (119B) FP8 on 4x L40S
+* **Approach**: Mistral-Small-4-119B-2603 is a 119B parameter model released natively in FP8 (`float8_e4m3fn`). Sharding this model across 4x L40S (4x 48GB VRAM) under ZeRO-3 results in 29.75 GB of sharded weights per GPU. Given 16K context activations, keeping weights on the GPU would lead to OOM. We apply our custom DeepSpeed CPU parameter and optimizer offloading (`deepspeed_offload_param: true`, `deepspeed_offload_optimizer: true`), CPU activation checkpointing (`deepspeed_cpu_checkpointing: true`), and Liger Kernel optimizations to run this 119B model efficiently on 4x L40S.
 
 # Evaluating
 
