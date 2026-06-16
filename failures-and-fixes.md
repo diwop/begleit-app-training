@@ -15,9 +15,11 @@
 * **Fix**: Created `src/train_patched.py` to monkeypatch `axolotl.train.train` right before execution starts (after config validation finishes) to force-inject `use_reentrant: true`. Modified the launcher to call this wrapper script.
 
 ### Iteration 3: CUDA Out of Memory (OOM) during Logits upcasting
-* **Error**: `torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.97 GiB. GPU 1 has a total capacity of 44.39 GiB ...`
-* **What didn't work**: Using the base `sequence_len: 16384`. Since Gemma models have a large vocabulary size (256,000), representing and casting the logits tensor to `float32` (via `logits.float()`) during the loss computation layer requires ~25 GB of VRAM at 16k context, leading to OOM on L40S.
-* **Fix**: Reduced `sequence_len` to `10880` in `config/train-gemma4.yml`. Since the dataset's maximum sequence length is `10853`, this saves over 8.4 GB of VRAM at peak while preserving all tokens without truncation.
+* **Error**: `torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.97 GiB. GPU 1 has a total capacity of 44.39 GiB of which 3.08 GiB is free. Including non-PyTorch memory, this process has 41.31 GiB memory in use.`
+* **What didn't work**: Using pure `sdpa` attention implementation fallback. Standard attention materialization for global layers (head dim 512) left too little VRAM free before the final loss layer. Upcasting logits to float32 (`logits.float()`) at 16k or 10.8k context requires 10-16 GB of memory, causing OOM.
+* **Fix**: Enabled `gemma4_hybrid_attn_impl: true` in `config/train-gemma4.yml` and reverted to `flash_attention_2` (default). This uses high-performance Flash Attention 2 on sliding-window layers (head dim 256) and falls back to SDPA only on global layers (head dim 512), dramatically reducing peak VRAM usage and allowing 16K max context length to fit and train on 2x L40S.
+
+
 
 ## Mistral
 
