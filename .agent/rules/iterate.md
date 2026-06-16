@@ -21,6 +21,8 @@ In our iterations we need to hand off between each other.
 You suggest to try out a new training / evaluation by pushing a branch and asking me to run a specific script from it.
 Then I'll notify you when it failed/succeeded and it's log is written to S3.
 
+Please add short notes about what we found out in each iteration what didn't work and how we fixed it to @failures-and-fixes.md so that we do not run in circles.
+
 Please make sure that you are confident with a new run.
 It's expensive to run code on GPUs.
 The code will run either on 2x L40S (Gemma 4 only), or 4x (Mistral and Gemma)

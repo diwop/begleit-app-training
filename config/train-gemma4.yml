@@ -3,6 +3,7 @@ base_model: google/gemma-4-26b-a4b-it
 attn_implementation: sdpa
 gradient_checkpointing_kwargs:
   use_reentrant: true
+sequence_len: 10880
 
 # Set to standard lora since the base model is unquantized bfloat16
 adapter: lora
