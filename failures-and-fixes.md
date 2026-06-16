@@ -52,6 +52,11 @@
 * **What didn't work**: When Axolotl initializes training, it saves the initial configs and calls `tokenizer.save_pretrained(cfg.output_dir, save_jinja_files=cfg.tokenizer_save_jinja_files)`. The `MistralCommonTokenizer`'s `save_pretrained` method delegates to `MistralCommonBackend.save_pretrained`, which strictly checks for unknown kwargs and raises a ValueError if any (including `save_jinja_files`) are passed.
 * **Fix**: Monkeypatched `save_pretrained` on `PreTrainedTokenizerBase`, `MistralCommonTokenizer`, and `TokenizersBackend` to intercept calls and pop the `save_jinja_files` key from the keyword arguments dictionary before passing it to the underlying save backend.
 
+### Iteration 5: CPU RAM Out of Memory (OOM) / SIGKILL during Trainer initialization
+* **Error**: `Signal 9 (SIGKILL) received by PID 4955` / CPU RAM exhausted during DeepSpeed setup.
+* **What didn't work**: Enabling CPU offloading for model parameters (`deepspeed_offload_param: true`) requires allocating and pinning the full 119B model weight space (~119 GB) in CPU memory. With 4 ranks running on the same host, the overhead and memory pinning completely exhausted the instance's available CPU RAM (VRAM remained unused at 1% because the execution crashed before launching GPU kernels), triggering the OS OOM killer.
+* **Fix**: Disabled CPU offloading of parameters and optimizer states (`deepspeed_offload_param: false` and `deepspeed_offload_optimizer: false`) in `config/train-mistral4small.yml`. Under DeepSpeed ZeRO-3, the 119B FP8 model is sharded across all 4 L40S GPUs (29.75 GB of weights per GPU), leaving ~17.4 GB VRAM per GPU. This is more than sufficient for training activations when combined with gradient checkpointing and FlashAttention-2, and avoids CPU RAM OOM crashes entirely.
+
 # Evaluating
 
 ...
