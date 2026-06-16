@@ -3,8 +3,8 @@ base_model: mistralai/Mistral-Small-4-119B-2603
 # DeepSpeed Memory & Sharding Optimizations
 deepspeed_cpu_checkpointing: true
 deepspeed_param_persistence_threshold: 0
-deepspeed_offload_param: true
-deepspeed_offload_optimizer: true
+deepspeed_offload_param: false
+deepspeed_offload_optimizer: false
 
 # Liger Kernel Memory & Speed Optimizations
 plugins:
@@ -19,7 +19,7 @@ adapter: lora
 load_in_8bit: false
 load_in_4bit: false
 qlora_sharded_model_loading: false
-dataloader_num_workers: 0
+dataloader_num_workers: 4
 
 # Instruct the underlying loader to load in bfloat16 format on CPU with low memory
 extra_model_config_kwargs:

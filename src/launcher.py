@@ -9,6 +9,11 @@ import sys
 from omegaconf import OmegaConf
 from huggingface_hub import snapshot_download
 
+TRAINING_PIPELINE = [
+    "config/train-gemma4.yml",
+    "config/train-mistral4small.yml"
+]
+
 def merge_configs(base_path: str, override_path: str):
     """Loads and merges a base YAML and an override YAML. Override values take precedence."""
     base_cfg = OmegaConf.load(base_path)
@@ -226,21 +231,32 @@ def main():
     vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
-    TRAINING_PIPELINE = [
-        "config/train-mistral4small.yml",
-        # "config/train-gemma4.yml",
-    ]
+
     
+    # Filter pipeline based on GPU count constraints:
+    # Mistral requires at least 8 GPUs, Gemma can run on any count.
+    active_pipeline = []
+    for config_yaml_path in TRAINING_PIPELINE:
+        if "mistral" in config_yaml_path.lower():
+            if num_gpus < 8:
+                print(f"\n⚠️ [SKIP] '{config_yaml_path}' requires at least 8 GPUs, but {num_gpus} are online. Skipping...")
+                continue
+        active_pipeline.append(config_yaml_path)
+    
+    if not active_pipeline:
+        print("\n🏁 No active training jobs in the pipeline after applying hardware constraints. Exiting.")
+        return
+
     # Pre-download models in a single process to build out local disk structures smoothly
-    pre_download_models(TRAINING_PIPELINE)
+    pre_download_models(active_pipeline)
     
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
     completed_output_dirs = []
 
-    print(f"🎬 Starting Pipeline Master Loop ({len(TRAINING_PIPELINE)} jobs registered)...")
+    print(f"🎬 Starting Pipeline Master Loop ({len(active_pipeline)} jobs registered)...")
     
-    for config_yaml_path in TRAINING_PIPELINE:
+    for config_yaml_path in active_pipeline:
         output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
         completed_output_dirs.append((output_path, config_yaml_path))
 
@@ -260,6 +276,7 @@ def main():
                     print(f"⚠️ [WARNING] S3 Sync failed for {output_dir} with exit code {e.returncode}!")
                     time.sleep(60)
 
+    # TODO: Activate when evaluation can process adapters
     # Evaluation Layer
     # print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
     # if os.path.exists("src/evaluation.py"):

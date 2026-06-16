@@ -68,7 +68,7 @@ def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds,
     monkeypatch.delenv("S3_BUCKET", raising=False)
     
     mock_cuda.is_available.return_value = True
-    mock_cuda.device_count.return_value = 2  # Simulate a 2x L40S cluster configuration
+    mock_cuda.device_count.return_value = 8  # Simulate an 8x L40S cluster configuration
     
     # Mock configuration object attributes returned by merge_configs
     mock_cfg = MagicMock()
@@ -100,3 +100,59 @@ def test_run_training_job_respects_attn_implementation(mock_exists, mock_conf_sa
     mock_merge.return_value = mock_cfg_2
     run_training_job("config/dummy.yml", num_gpus=1, run_id="test_run")
     assert mock_cfg_2.get("attn_implementation") == "sdpa"
+
+
+@patch("src.launcher.merge_configs")
+@patch("src.launcher.generate_runtime_deepspeed")
+@patch("src.launcher.OmegaConf.save")
+@patch("src.launcher.os.path.exists")
+@patch("src.launcher.pre_download_models")
+@patch("src.launcher.run_training_job")
+def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mock_conf_save, mock_gen_ds, mock_merge, mock_cuda):
+    """
+    Verifies that Mistral configurations are only run on exactly 8 GPUs,
+    whereas Gemma configurations can run on other GPU counts.
+    """
+    mock_cuda.is_available.return_value = True
+    mock_exists.return_value = True
+    
+    # We patch TRAINING_PIPELINE in launcher module to have both Gemma and Mistral configs
+    import src.launcher
+    original_pipeline = src.launcher.TRAINING_PIPELINE
+    src.launcher.TRAINING_PIPELINE = [
+        "config/train-mistral4small.yml",
+        "config/train-gemma4.yml"
+    ]
+    
+    try:
+        # Configure return value for run_training_job mock to support unpacking
+        mock_run_job.return_value = ("/app/output/adapter/mock", {})
+        
+        # Case 1: 2 GPUs -> Mistral should be skipped, Gemma should run
+        mock_cuda.device_count.return_value = 2
+        mock_run_job.reset_mock()
+        mock_pre_download.reset_mock()
+        
+        src.launcher.main()
+        
+        # Verify only Gemma is passed to download and run
+        mock_pre_download.assert_called_once_with(["config/train-gemma4.yml"])
+        mock_run_job.assert_called_once()
+        assert mock_run_job.call_args[0][0] == "config/train-gemma4.yml"
+        
+        # Case 2: 8 GPUs -> Both Mistral and Gemma should run
+        mock_cuda.device_count.return_value = 8
+        mock_run_job.reset_mock()
+        mock_pre_download.reset_mock()
+        
+        src.launcher.main()
+        
+        # Verify both are downloaded and run
+        mock_pre_download.assert_called_once_with(["config/train-mistral4small.yml", "config/train-gemma4.yml"])
+        assert mock_run_job.call_count == 2
+        called_configs = [args[0][0] for args in mock_run_job.call_args_list]
+        assert "config/train-mistral4small.yml" in called_configs
+        assert "config/train-gemma4.yml" in called_configs
+        
+    finally:
+        src.launcher.TRAINING_PIPELINE = original_pipeline
