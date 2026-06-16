@@ -240,26 +240,26 @@ def main():
             "reference_text": None
         })
 
-    # PART 3: INGEST ADAPTER DATASET FROM JSONL
-    jsonl_path = "data/train/dataset.jsonl"
-    if os.path.exists(jsonl_path):
-        print(f"📥 Parsing tuning records from: {jsonl_path}")
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line_number, line in enumerate(f, 1):
-                if not line.strip(): continue
-                entry = json.loads(line)
-                prompt_id = str(entry.get("id", "")).strip()
+    # # PART 3: INGEST ADAPTER DATASET FROM JSONL
+    # jsonl_path = "data/train/dataset.jsonl"
+    # if os.path.exists(jsonl_path):
+    #     print(f"📥 Parsing tuning records from: {jsonl_path}")
+    #     with open(jsonl_path, "r", encoding="utf-8") as f:
+    #         for line_number, line in enumerate(f, 1):
+    #             if not line.strip(): continue
+    #             entry = json.loads(line)
+    #             prompt_id = str(entry.get("id", "")).strip()
                 
-                orig_content = read_file_with_extensions(f"data/raw/{prompt_id}_Standardsprache")
-                ref_content = read_file_with_extensions(f"data/raw/{prompt_id}_Leichte_Sprache")
+    #             orig_content = read_file_with_extensions(f"data/raw/{prompt_id}_Standardsprache")
+    #             ref_content = read_file_with_extensions(f"data/raw/{prompt_id}_Leichte_Sprache")
                 
-                evaluation_set.append({
-                    "is_integrity": False,
-                    "original_user": orig_content,
-                    "templated_user": global_template.replace("%INPUT%", orig_content),
-                    "system": global_system_prompt,
-                    "reference_text": ref_content
-                })
+    #             evaluation_set.append({
+    #                 "is_integrity": False,
+    #                 "original_user": orig_content,
+    #                 "templated_user": global_template.replace("%INPUT%", orig_content),
+    #                 "system": global_system_prompt,
+    #                 "reference_text": ref_content
+    #             })
 
     # --- DYNAMIC ADAPTER CHECKPOINT RESOLUTION ---
     mistral_adapter = "/app/output/adapter/mistral4small"
@@ -271,17 +271,17 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
     EVALUATION_PIPELINE = []
-    # Mistral stays on compressed-tensors AWQ layout
-    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
+    # # Mistral stays on compressed-tensors AWQ layout
+    # EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
+    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
     # Gemma routes through the official model repo with hardware native FP8 execution
     EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
 
-    EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
+    # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
     output_json = {
         "system": global_system_prompt,
