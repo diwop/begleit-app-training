@@ -136,11 +136,30 @@ try:
     PreTrainedTokenizerBase.chat_template = property(get_chat_template, set_chat_template)
     print("🔧 MONKEYPATCH: Dynamically injected fallback chat_template property getter on PreTrainedTokenizerBase")
 
+    # Patch save_pretrained to pop save_jinja_files parameter for Mistral tokenizers
+    original_base_save_pretrained = PreTrainedTokenizerBase.save_pretrained
+    def patched_base_save_pretrained(self, *args, **kwargs):
+        class_name = self.__class__.__name__
+        if "Mistral" in class_name or "TokenizersBackend" in class_name:
+            kwargs.pop("save_jinja_files", None)
+        return original_base_save_pretrained(self, *args, **kwargs)
+    PreTrainedTokenizerBase.save_pretrained = patched_base_save_pretrained
+    print("🔧 MONKEYPATCH: Successfully patched PreTrainedTokenizerBase.save_pretrained")
+
+    def make_patched_save_pretrained(original_save_fn):
+        def patched_save_pretrained(self, *args, **kwargs):
+            kwargs.pop("save_jinja_files", None)
+            return original_save_fn(self, *args, **kwargs)
+        return patched_save_pretrained
+
     # Patch MistralCommonTokenizer if present
     try:
         from transformers.tokenization_mistral_common import MistralCommonTokenizer
         MistralCommonTokenizer.apply_chat_template = PreTrainedTokenizerBase.apply_chat_template
         MistralCommonTokenizer.get_chat_template = PreTrainedTokenizerBase.get_chat_template
+        if hasattr(MistralCommonTokenizer, "save_pretrained"):
+            MistralCommonTokenizer.save_pretrained = make_patched_save_pretrained(MistralCommonTokenizer.save_pretrained)
+            print("🔧 MONKEYPATCH: Successfully patched MistralCommonTokenizer.save_pretrained")
         print("🔧 MONKEYPATCH: Successfully patched MistralCommonTokenizer.apply_chat_template and get_chat_template")
     except ImportError:
         pass
@@ -150,6 +169,9 @@ try:
         from transformers.tokenization_utils_tokenizers import TokenizersBackend
         TokenizersBackend.apply_chat_template = PreTrainedTokenizerBase.apply_chat_template
         TokenizersBackend.get_chat_template = PreTrainedTokenizerBase.get_chat_template
+        if hasattr(TokenizersBackend, "save_pretrained"):
+            TokenizersBackend.save_pretrained = make_patched_save_pretrained(TokenizersBackend.save_pretrained)
+            print("🔧 MONKEYPATCH: Successfully patched TokenizersBackend.save_pretrained")
         print("🔧 MONKEYPATCH: Successfully patched TokenizersBackend.apply_chat_template and get_chat_template")
     except ImportError:
         pass

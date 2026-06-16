@@ -47,6 +47,11 @@
 * **What didn't work**: Hugging Face `Trainer` performs a hard check (`validate_quantization_for_training`) during initialization and raises a ValueError if the base model has FP8 quantized parameters. This is a false-positive for parameter-efficient fine-tuning (PEFT/LoRA) because the FP8 base weights are completely frozen, and only the float16/bfloat16 LoRA adapter parameters are being trained.
 * **Fix**: Monkeypatched `validate_quantization_for_training` in both `transformers.trainer_utils` and `transformers.trainer` inside `src/train_patched.py` to be a no-op dummy function before loading the trainer.
 
+### Iteration 4: MistralTokenizer save_pretrained save_jinja_files Failure
+* **Error**: `ValueError: Kwargs ['save_jinja_files'] are not supported by MistralCommonBackend.save_pretrained.`
+* **What didn't work**: When Axolotl initializes training, it saves the initial configs and calls `tokenizer.save_pretrained(cfg.output_dir, save_jinja_files=cfg.tokenizer_save_jinja_files)`. The `MistralCommonTokenizer`'s `save_pretrained` method delegates to `MistralCommonBackend.save_pretrained`, which strictly checks for unknown kwargs and raises a ValueError if any (including `save_jinja_files`) are passed.
+* **Fix**: Monkeypatched `save_pretrained` on `PreTrainedTokenizerBase`, `MistralCommonTokenizer`, and `TokenizersBackend` to intercept calls and pop the `save_jinja_files` key from the keyword arguments dictionary before passing it to the underlying save backend.
+
 # Evaluating
 
 ...
