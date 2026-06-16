@@ -135,11 +135,11 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     generate_runtime_deepspeed(runtime_ds_path)
     merged_cfg["deepspeed"] = runtime_ds_path
 
+    if not merged_cfg.get("output_dir"):
+        merged_cfg["output_dir"] = f"/app/output/adapter/{config_filename}"
+
     # Save the resolved, finalized configuration path for Axolotl to consume
     OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
-
-    if "output_dir" not in merged_cfg:
-        merged_cfg["output_dir"] = f"/app/output/adapter/{config_filename}"
     
     # Extract the string for local launcher asset checks
     output_dir = str(merged_cfg["output_dir"])
