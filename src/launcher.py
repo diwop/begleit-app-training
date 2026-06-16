@@ -181,8 +181,8 @@ def main():
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     TRAINING_PIPELINE = [
-        #"config/train-mistral4small.yml",
-        "config/train-gemma4.yml",
+        "config/train-mistral4small.yml",
+        # "config/train-gemma4.yml",
     ]
     
     # Pre-download models in a single process to build out local disk structures smoothly

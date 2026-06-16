@@ -1,10 +1,15 @@
 # --- config/train-mistral4small.yml ---
-base_model: axolotl-ai-co/Mistral-Small-4-119B-2603-FP8
+base_model: mistralai/Mistral-Small-4-119B-2603
 
 adapter: lora
 load_in_8bit: false
 load_in_4bit: false
 qlora_sharded_model_loading: false
+
+# Force the loader to pin the model components in their native 8-bit format
+gptq: false
+extra_model_config_kwargs:
+  torch_dtype: "float8_e4m3fn"
 
 datasets:
   - path: data/train/dataset.jsonl
