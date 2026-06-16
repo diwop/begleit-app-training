@@ -16,6 +16,14 @@ def run_smoke_test():
         import axolotl.cli.train
         print("Success: Axolotl imported perfectly!")
 
+        print("\nTesting DeepSpeed import...")
+        import deepspeed
+        print(f"Success: DeepSpeed ({deepspeed.__version__}) imported perfectly!")
+
+        print("\nTesting Liger Kernel import...")
+        import liger_kernel
+        print("Success: Liger Kernel imported perfectly!")
+
     except Exception as e:
         print(f"\n[FATAL ERROR] Smoke test failed: {e}")
         sys.exit(1)
