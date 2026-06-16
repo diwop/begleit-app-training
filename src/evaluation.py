@@ -142,7 +142,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             # Universal string extraction regex for plain tags and Gemma hardware tokens
             if not reasoning_trace:
                 think_match = re.search(
-                    r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>)(.*?)(?:<channel\|>|</(?:think|thought)>|$)", 
+                    r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
                     raw_text, 
                     re.DOTALL | re.IGNORECASE
                 )
@@ -151,7 +151,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
                     
             # Wipe structural thought text sequences entirely out of final textstat payloads
             raw_text = re.sub(
-                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>).*?(?:<channel\|>|</(?:think|thought)>|$)", 
+                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
                 "", 
                 raw_text, 
                 flags=re.DOTALL | re.IGNORECASE
@@ -270,14 +270,14 @@ def main():
 
     EVALUATION_PIPELINE = []
     # Mistral stays on compressed-tensors AWQ layout
-    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
+    # EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
+    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
     # # Gemma routes through the official model repo with hardware native FP8 execution
-    # EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
-    # if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-    #     EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
+    EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
+    if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+        EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
