@@ -33,8 +33,13 @@
 
 ### Iteration 2: Mistral Tokenizer Validation Failure
 * **Error**: `mistral_common.exceptions.InvalidMessageStructureException: Expected last role User or Tool (or Assistant with prefix or continue_final_message set to True) for serving but got assistant`
-* **What didn't work**: Using `chat_template: chatml` didn't bypass the error because the `MistralCommonTokenizer` delegates `apply_chat_template` to the `mistral-common` library validator, which strictly requires messages to end in `User` or `Tool` (for serving/inference). SFT training data naturally ends with the target `Assistant` response.
-* **Fix**: Added a monkeypatch in `src/train_patched.py` that replaces `apply_chat_template` of `MistralCommonTokenizer` and `TokenizersBackend` with `PreTrainedTokenizerBase.apply_chat_template`. This completely bypasses the `mistral-common` inference validator during training and routes the message formatting to the standard Jinja2 engine. Switched `chat_template` to `tokenizer_default` in `config/train-mistral4small.yml` to utilize the model's native instruct format (`<s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][MODEL_SETTINGS]...[/MODEL_SETTINGS][INST]...[/INST]...</s>`).
+* **What didn't work**: 
+  - Using `chat_template: chatml` failed because `MistralCommonTokenizer` overrides `apply_chat_template` to delegate to `mistral-common` validation rules (which expect the conversation to end in `User` or `Tool` for serving).
+  - Replacing `apply_chat_template` and switching `chat_template` to `tokenizer_default` triggered a secondary error: `ValueError: chat_template choice is tokenizer_default but tokenizer's chat_template is null. Please add a chat_template in tokenizer config`. This occurs because `MistralCommonTokenizer` does not populate the `chat_template` property on the instance from `tokenizer_config.json`.
+* **Fix**: 
+  - Added a class property getter monkeypatch to `PreTrainedTokenizerBase` in `src/train_patched.py` that intercepts `chat_template` lookups. If `chat_template` is `None` and the tokenizer class/model is Mistral-based, it returns the official Mistral Small 4 chat template string.
+  - Replaced the tokenizer classes' `apply_chat_template` with `PreTrainedTokenizerBase.apply_chat_template` to delegate rendering to the standard Jinja2 engine, bypassing `mistral-common`'s validation completely.
+  - Set `chat_template: tokenizer_default` in `config/train-mistral4small.yml` to train the adapter on the model's native format (`<s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][MODEL_SETTINGS]...[/MODEL_SETTINGS][INST]...[/INST]...</s>`).
 
 # Evaluating
 
