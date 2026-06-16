@@ -57,6 +57,11 @@
 * **What didn't work**: Enabling CPU offloading for model parameters (`deepspeed_offload_param: true`) requires allocating and pinning the full 119B model weight space (~119 GB) in CPU memory. With 4 ranks running on the same host, the overhead and memory pinning completely exhausted the instance's available CPU RAM (VRAM remained unused at 1% because the execution crashed before launching GPU kernels), triggering the OS OOM killer.
 * **Fix**: Disabled CPU offloading of parameters and optimizer states (`deepspeed_offload_param: false` and `deepspeed_offload_optimizer: false`) in `config/train-mistral4small.yml`. Under DeepSpeed ZeRO-3, the 119B FP8 model is sharded across all 4 L40S GPUs (29.75 GB of weights per GPU), leaving ~17.4 GB VRAM per GPU. This is more than sufficient for training activations when combined with gradient checkpointing and FlashAttention-2, and avoids CPU RAM OOM crashes entirely.
 
+### Iteration 6: Trainer Hang / Deadlock during distributed process group initialization
+* **Error**: The training run hangs indefinitely during `Trainer` instantiation (right after `Gradient accumulation steps mismatch` warning) with VRAM at 1% and CPU RAM stable at 78%.
+* **What didn't work**: Having `NCCL_P2P_DISABLE=1` and `NCCL_IB_DISABLE=1` enabled in `src/launcher.py` (which were carried over from an old vLLM spike config). For large models like Mistral Small 119B, forcing NCCL to route all parameter and gradient synchronization traffic through CPU sockets and the local TCP interface (`eth0`) instead of direct GPU-to-GPU memory copies (NVLink/PCIe) causes network buffer saturation and a communication deadlock, resulting in ranks hanging indefinitely.
+* **Fix**: Removed `NCCL_P2P_DISABLE=1` and `NCCL_IB_DISABLE=1` from `src/launcher.py` to allow the GPUs to communicate over high-speed Peer-to-Peer (PCIe/NVLink) direct channels. Additionally, set `TORCH_NCCL_BLOCKING_WAIT=1` to ensure any future distributed communication hangs time out with a descriptive error instead of locking up.
+
 # Evaluating
 
 ...
