@@ -14,12 +14,12 @@ dataset_prepared_path: last_run_prepared
 val_set_size: 0
 
 sequence_len: 16384 
-sample_packing: true 
+sample_packing: false 
 pad_to_sequence_len: false
 
 # Memory boundaries optimized for large context execution
 micro_batch_size: 1
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 4
 
 num_epochs: 3
 optimizer: adamw_torch_fused # Maximizes execution speed when fitting natively in VRAM

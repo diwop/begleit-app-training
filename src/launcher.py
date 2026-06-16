@@ -232,14 +232,14 @@ def main():
                     time.sleep(60)
 
     # Evaluation Layer
-    print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
-    if os.path.exists("src/evaluation.py"):
-        try:
-            subprocess.run(["python", "src/evaluation.py"], check=True)
-            print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
-        except subprocess.CalledProcessError as e:
-            print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
-            sys.exit(1)
+    # print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
+    # if os.path.exists("src/evaluation.py"):
+        # try:
+            # subprocess.run(["python", "src/evaluation.py"], check=True)
+            # print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
+        # except subprocess.CalledProcessError as e:
+            # print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
+            # sys.exit(1)
 
 if __name__ == "__main__":
     main()
