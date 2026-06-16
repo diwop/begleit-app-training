@@ -19,6 +19,7 @@ adapter: lora
 load_in_8bit: false
 load_in_4bit: false
 qlora_sharded_model_loading: false
+dataloader_num_workers: 0
 
 # Instruct the underlying loader to load in bfloat16 format on CPU with low memory
 extra_model_config_kwargs:
