@@ -33,8 +33,7 @@ RUN --mount=type=cache,target=/app/uv_cache \
 # Install vllm separately
 RUN --mount=type=cache,target=/app/uv_cache \
     uv pip install packaging ninja && \
-    uv pip install vllm && \
-    uv pip install flash-attn --no-build-isolation --find-links https://github.com/Dao-AILab/flash-attention/releases/latest
+    uv pip install vllm
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
