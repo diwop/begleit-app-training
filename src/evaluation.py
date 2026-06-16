@@ -39,8 +39,8 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
 
 def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
     """
-    Initializes the engine, handles runtime LoRA space allocation, batch processes
-    the entire evaluation set without printing outputs, and returns raw texts.
+    Initializes the engine, handles conditional FP8 and architecture properties,
+    and processes conversations through the safe native parallel llm.chat backend.
     """
     if evaluation_set is None:
         evaluation_set = []
@@ -52,6 +52,8 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     print("="*60, flush=True)
     
     generated_responses = []
+    is_gemma = "gemma" in model_id.lower()
+    is_mistral = "mistral" in model_id.lower()
     
     try:
         # DYNAMIC HARDWARE DETECTION
@@ -68,11 +70,15 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             "trust_remote_code": True,
             "disable_custom_all_reduce": True,
             "enforce_eager": True,
-            "gpu_memory_utilization": 0.82
+            "gpu_memory_utilization": 0.85
         }
 
-        # Force text-only mapping AND explicit tokenizer routing rules for Mistral Small 4
-        if "mistral" in model_id.lower():
+        # Dynamic parameter routing per architecture target
+        if is_gemma:
+            print("💎 Adjusting execution environment parameters for Native Gemma 4 FP8...")
+            llm_kwargs["dtype"] = "bfloat16" # Protects weights from FP16 NaN math breakdowns
+            
+        if is_mistral:
             print("🛑 Disabling vision profiling modalities for text-only pipeline...")
             llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
             print("⚙️  Activating specialized Mistral tokenizer backend...")
@@ -84,68 +90,73 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             
         llm = LLM(**llm_kwargs)
         
-        # Pass trust_remote_code=True here so the tokenizer can compile local configuration scripts
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-
-        # Configure reasoning variables for supporting models
-        chat_template_kwargs = {}
-        if "gemma" in model_id.lower() or "mistral" in model_id.lower():
-            print(f"Activating offline deep reasoning mode for: {model_id}")
-            chat_template_kwargs = {
-                "enable_thinking": True,   # Activates the Gemma 4 reasoning channel
-                "reasoning_effort": "high" # Activates the Mistral Small 4 reasoning channel
-            }
-        
-        templated_inputs = []
+        # Build message lists for parallel execution via the chat engine
+        batched_messages = []
         for prompt_item in evaluation_set:
-            messages = [
+            batched_messages.append([
                 {"role": "system", "content": prompt_item["system"]},
                 {"role": "user", "content": prompt_item["templated_user"]}
-            ]
-            full_string = tokenizer.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
-            templated_inputs.append(full_string)
+            ])
             
-        sampling_params = SamplingParams(
-            temperature=0.3,
-            top_p=0.95,
-            max_tokens=8192,
-            skip_special_tokens=False
-        )
-        
+        # Target Sampling Configurations based on active reasoning paths
+        if is_gemma:
+            sampling_params = SamplingParams(
+                temperature=1.0, # Calibrated baseline for Gemma 4 search path exploitation
+                top_p=0.95,
+                top_k=64,
+                max_tokens=4096,
+                skip_special_tokens=False # CRITICAL: Retain native hardware channel tokens
+            )
+            chat_template_kwargs = {"enable_thinking": True}
+        else:
+            sampling_params = SamplingParams(
+                temperature=0.3,
+                top_p=0.95,
+                max_tokens=4096,
+                skip_special_tokens=False
+            )
+            chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral else {}
+            
         generate_kwargs = {}
         if adapter_id:
-            lora_request = LoRARequest("spike_adapter_layer", 1, adapter_id)
-            generate_kwargs["lora_request"] = lora_request
+            generate_kwargs["lora_request"] = LoRARequest("spike_adapter_layer", 1, adapter_id)
             
-        print(f"⚡ Processing {len(templated_inputs)} prompts in parallel execution...", flush=True)
-        outputs = llm.generate(templated_inputs, sampling_params, **generate_kwargs)
+        print(f"⚡ Processing {len(batched_messages)} prompts via unified vLLM Chat Engine...", flush=True)
+        outputs = llm.chat(
+            messages=batched_messages, 
+            sampling_params=sampling_params, 
+            chat_template_kwargs=chat_template_kwargs, 
+            **generate_kwargs
+        )
         
         for out in outputs:
             raw_text = out.outputs[0].text.strip()
             reasoning_trace = ""
             
-            # # FIX 2: Broad structural regex to intercept native control tokens and text tags
-            # think_match = re.search(
-            #     r"(?:<\|channel\|>thought|<|thought\|>|<(?:think|thought)>)(.*?)(?:<\|channel\|>|</(?:think|thought)>)", 
-            #     raw_text, 
-            #     re.DOTALL | re.IGNORECASE
-            # )
+            # Extract programmatic reasoning channels if populated by the backend
+            if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
+                reasoning_trace = out.outputs[0].reasoning.strip()
+            elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
+                reasoning_trace = out.outputs[0].reasoning_content.strip()
             
-            # if think_match:
-            #     reasoning_trace = think_match.group(1).strip()
-            #     # Clean the structural thought block out of the final display text
-            #     raw_text = re.sub(
-            #         r"(?:<\|channel\|>thought|<|thought\|>|<(?:think|thought)>).*?(?:<\|channel\|>|</(?:think|thought)>)", 
-            #         "", 
-            #         raw_text, 
-            #         flags=re.DOTALL | re.IGNORECASE
-            #     ).strip()
+            # Universal string extraction regex for plain tags and Gemma hardware tokens
+            if not reasoning_trace:
+                think_match = re.search(
+                    r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>)(.*?)(?:<channel\|>|</(?:think|thought)>|$)", 
+                    raw_text, 
+                    re.DOTALL | re.IGNORECASE
+                )
+                if think_match:
+                    reasoning_trace = think_match.group(1).strip()
+                    
+            # Wipe structural thought text sequences entirely out of final textstat payloads
+            raw_text = re.sub(
+                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>).*?(?:<channel\|>|</(?:think|thought)>|$)", 
+                "", 
+                raw_text, 
+                flags=re.DOTALL | re.IGNORECASE
+            ).strip()
                 
-            # Append as a tuple so metrics loop can map both outputs cleanly
             generated_responses.append((raw_text, reasoning_trace))
             
     except Exception as e:
@@ -157,15 +168,11 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         try:
             if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
                 llm.llm_engine.engine_core.shutdown()
-        except Exception:
-            pass
-            
+        except Exception: pass
         try: destroy_model_parallel()
         except Exception: pass
             
         if 'llm' in locals(): del llm
-        if 'tokenizer' in locals(): del tokenizer
-            
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -209,7 +216,7 @@ def main():
         "Herr Müller beim letzten mal haben wir über Bluthochdruck gesprochen erinnern sie sich noch was das bedeutet",
         "Das hier sind Ihre Blutdruckwerte aus der letzten Woche. Da können Sie sehen, dass der Blutdruck immer noch zu hoch ist. Sie sollten versuchen, Ihren Blutdruck zu senken. Das können Sie tun, indem Sie weniger Salz essen und mehr Sport treiben. Ansonsten können Sie auch einen Blutdrucksenker einnehmen. Aber erstmal sollten wir es mit den Anpassungen bei Ihrem Lebensstil versuchen. Haben Sie dazu Fragen?",
         "Das hier sind ihre Blutdruckwerte aus der letzten Woche da können sie sehen das der Blutdruck immer noch zu hoch ist sie sollten versuchen ihren Blutdruck zu senken das können sie tun indem sie weniger Salz essen und mehr Sport treiben ansonsten können sie auch einen Blutdrucksenker einnehmen aber erstmal sollten wir es mit den Anpassungen bei ihrem Lebensstil versuchen haben sie dazu Fragen",
-        "Haben Sie noch eine angenehme Woche. Bis zum nächsten Mal!"
+        "Haben Sie noch eine angenehme Woche. Bis zum nächsten Mal!",
         "haben Sie noch eine angenehme Woche bis zum nächsten mal",
         "Die Quantenchromodynamik (kurz QCD) ist eine Quantenfeldtheorie zur Beschreibung der starken Wechselwirkung. Sie beschreibt die Wechselwirkung von Quarks und Gluonen, also der fundamentalen Bausteine der Atomkerne.\nDie QCD ist wie die Quantenelektrodynamik (QED) eine Eichtheorie. Während die QED jedoch auf der abelschen Eichgruppe U(1) beruht und die Wechselwirkung elektrisch geladener Teilchen (z. B. Elektron oder Positron) mit Photonen beschreibt, wobei die Photonen selbst ungeladen sind, ist die Eichgruppe der QCD, die SU(3), nicht-abelsch. Es handelt sich also um eine Yang-Mills-Theorie. Die Wechselwirkungsteilchen der QCD sind die Gluonen, und an die Stelle der elektrischen Ladung als Erhaltungsgröße tritt die Farbladung (daher der Name Chromodynamik). Die Gluonen selbst sind im Gegensatz zu den Eichteilchen der QED „geladen“, das heißt Träger von Farbladungen, und wechselwirken auch untereinander.",
         "# Lachs im Sesammantel auf Erbsenpüree und Zuckerschotenstroh\nZutaten Für 4 Portionen:\n* 4 Lachssteak(s) küchenfertig, à 140 g\n* 4 EL Sesam geröstet, weiß und schwarz\n* 2 EL Öl (Woköl mit Sesamaroma)\n* 2 EL Butter\n* 2 Schalotte(n)\n* 400 g Erbsen, TK\n* 2 EL Sahne\n* Salz und Pfeffer\n* Muskat\n* Zucker\n* 100 g Zuckerschote(n)\n* 1 EL Butter\n* Erbsensprossen (Erbsenspargelsprossen) für die Dekoration\nGesamtzeit: 35 Min.\nArbeitszeit: 25 Min.\nKoch-/Backzeit: 10 Min.\n1. Die Schalotten abziehen und in Würfel schneiden. Diese in einem Topf mit der Butter angehen lassen, die aufgetauten Erbsen zufügen. Etwas angehen lassen und mit Salz, Pfeffer, Zucker und Muskat würzen. Sahne zufügen, ca. fünf Minuten dünsten und danach im Mixer sehr fein pürieren.\n2. Den Lachs im Sesam wenden und in einer Pfanne mit dem Öl bei mittlerer Hitze von beiden Seiten je zwei Minuten braten und anschließend zwei Minuten ruhen lassen. Mit Salz und Pfeffer würzen.\n3. Die Zuckerschoten in dünne Streifen schneiden und in Butter glacieren. Mit Salz, Muskat und etwas Zucker würzen.\n4. Anrichten: Das Püree auf einem tiefen Teller anrichten, den aufgeschnittenen Lachs darauf setzen und von den glacierten Schoten einen Löffel dararauf verteilen. Mit Erbsspargelsprossen dekorieren.\n5. Guten Appetit!",
@@ -220,7 +227,7 @@ def main():
         "Inzwischen könnte ich beidem Wort \"bunt\" nur noch kotzen. Solange wirklich Fachkräfte kommen, hat ja kein Mensch was dagegen. Auch die Spanier und Italiener, die hier ihre Ausbildung machen, sind doch willkommen. Dieses Getue in den Medien geht mir tierisch auf den Senkel. Und sie wissen immer noch nicht (oder wollen es nicht wissen) worum es uns geht.",
         "Diese Pisser!!! völliger Quatsch, welche Partei mit den Grünen oder Linken sympathisiert kann nichts gutes für das deutsche Volk wollen ebenso wie die komischen Christlichen.",
         "Ja die DDR lässt überall grüßen, ich wundere mich auch jeden Tag. Zensur, Einheitsmeinung, Volksentscheid unerwünscht. Propaganda-Medien. und eine durchgeknallte Staatsratsvorsitzende....",
-        "die sollten sich von den skandinavischen gruppenvergewaltigungsopfern tips geben lassen,wie man das blut aus den klamotten bekommt! eigentlich traurig,dass man solche beispiele bringen muss! linda aus oslo ist ein schlimmesbld u läßt nur ansatzweise erahnen,was sie durchgemacht haben muss..."
+        "die sollten sich von den skandinavischen gruppenvergewaltigungsopfern tips geben lassen,wie man das blut aus den klamotten bekommt! eigentlich traurig,dass man solche beispiele bringen muss! linda aus oslo ist ein schlimmesbld u läßt nur ansatzweise erahnen,was sie durchgemacht haben muss...",
         "Die verdammten Drecksvölker,und Deutschland will sich das Dreckspack ins Land holen!"
     ]
     
@@ -264,13 +271,15 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
     EVALUATION_PIPELINE = []
+    # Mistral stays on compressed-tensors AWQ layout
     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
     if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
-    EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, None))
+    # Gemma routes through the official model repo with hardware native FP8 execution
+    EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("cyankiwi/gemma-4-26B-A4B-it-AWQ-8bit", "compressed-tensors", 8192, gemma_adapter))
+        EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
 
     EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
@@ -289,7 +298,6 @@ def main():
             record["template"] = ""
             
         input_fre, input_wstf = get_raw_metrics(item["original_user"])
-        # Source inputs default to an empty reasoning string
         record["r"] = [[item["original_user"], input_fre, input_wstf, ""]]
         output_json["prompts"].append(record)
 
@@ -303,7 +311,6 @@ def main():
         
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
-            # Append full response data metrics array directly
             output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf, reasoning_trace])
 
     # POST-PROCESSING: Append tuning ground truth references
@@ -312,7 +319,6 @@ def main():
         if item["reference_text"] is not None:
             ref_txt = item["reference_text"]
             ref_fre, ref_wstf = get_raw_metrics(ref_txt)
-            # Ground truth targets default to an empty reasoning string
             output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf, ""])
 
     # Output Serialization and S3 Upload
