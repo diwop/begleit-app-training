@@ -158,7 +158,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         "--multi_gpu",
         "--num_machines", "1",
         "--num_processes", str(num_gpus),
-        "-m", "axolotl.cli.train",
+        "src/train_patched.py",
         temp_yaml_path
     ]
 
