@@ -94,6 +94,7 @@ def generate_runtime_deepspeed(
 
     # Enforce strict Stage 3 parameter sharding across distributed nodes
     ds_dict["zero_optimization"]["stage"] = 3
+    ds_dict["zero3_init_flag"] = True
     
     # Optimizer and parameter offloading configurations
     ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "cpu" if offload_optimizer else "none"}

@@ -62,6 +62,11 @@
 * **What didn't work**: Having `NCCL_P2P_DISABLE=1` and `NCCL_IB_DISABLE=1` enabled in `src/launcher.py` (which were carried over from an old vLLM spike config). For large models like Mistral Small 119B, forcing NCCL to route all parameter and gradient synchronization traffic through CPU sockets and the local TCP interface (`eth0`) instead of direct GPU-to-GPU memory copies (NVLink/PCIe) causes network buffer saturation and a communication deadlock, resulting in ranks hanging indefinitely.
 * **Fix**: Removed `NCCL_P2P_DISABLE=1` and `NCCL_IB_DISABLE=1` from `src/launcher.py` to allow the GPUs to communicate over high-speed Peer-to-Peer (PCIe/NVLink) direct channels. Additionally, set `TORCH_NCCL_BLOCKING_WAIT=1` to ensure any future distributed communication hangs time out with a descriptive error instead of locking up.
 
+### Iteration 7: High CPU RAM Usage / Parallel loading memory exhaustion during model loading
+* **Error**: CPU RAM spikes to 74% (527 GB) during model loading and the processes get stuck or killed.
+* **What didn't work**: Under DeepSpeed Stage 3, unless `zero3_init_flag` is explicitly set to `true` in the DeepSpeed config file, Hugging Face `transformers` does not use the `deepspeed.zero.Init()` context manager during model loading. Consequently, all 4 ranks load the entire 119B model into CPU memory in parallel before partitioning it. This causes a massive memory spike (4 x 119 GB = 476 GB + overhead, exceeding 500 GB) which triggers system paging/thrashing or OOM crashes.
+* **Fix**: Added `"zero3_init_flag": true` to the root level of the DeepSpeed configuration dynamically compiled in `src/launcher.py`. This instructs `transformers` to wrap model loading in `deepspeed.zero.Init()`, sharding the weights on-the-fly directly to the GPU VRAM as they are loaded, keeping CPU memory usage extremely low.
+
 # Evaluating
 
 ...
