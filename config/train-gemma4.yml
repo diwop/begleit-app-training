@@ -1,2 +1,44 @@
-base_model: google/gemma-4-26B-A4B-it
-load_in_4bit: true
+# --- config/train-gemma4.yml ---
+base_model: google/gemma-4-26b-a4b-it
+gemma4_hybrid_attn_impl: true
+gradient_checkpointing_kwargs:
+  use_reentrant: true
+
+# DeepSpeed Memory & Sharding Optimizations
+deepspeed_cpu_checkpointing: true
+deepspeed_param_persistence_threshold: 0
+deepspeed_offload_param: true
+deepspeed_offload_optimizer: true
+
+# Liger Kernel Memory & Speed Optimizations
+plugins:
+  - axolotl.integrations.liger.LigerPlugin
+liger_rope: true
+liger_rms_norm: true
+liger_glu_activation: true
+liger_layer_norm: true
+liger_fused_linear_cross_entropy: true
+
+# Set to standard lora since the base model is unquantized bfloat16
+adapter: lora
+
+unsloth: false
+load_in_8bit: false # Disabled: Fits natively sharded under ZeRO-3
+load_in_4bit: false
+qlora_sharded_model_loading: false
+
+# Map special tokens directly to help Axolotl's parser identify 
+# turn boundaries, clearing the false-positive warning.
+special_tokens:
+  eos_token: "<eos>"
+eot_tokens:
+  - "<end_of_turn>"
+
+datasets:
+  - path: data/train/dataset.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content

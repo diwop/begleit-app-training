@@ -1,26 +1,44 @@
-# Pick base image with CUDA 12.1 which is optimized for HSUper A100 and L40S GPUs
-FROM axolotlai/axolotl-cloud:main-20250129-py3.11-cu121-2.3.1
+# Optimized for L40S GPUs
+FROM axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
 
-# Make Axolotl available globally
-ENV PATH="/root/miniconda3/envs/py3.11/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# 1. PERMANENTLY activate Axolotl's pre-built master environment!
+ENV VIRTUAL_ENV="/workspace/axolotl-venv"
+ENV PATH="/workspace/axolotl-venv/bin:$PATH"
+
+# --- 💾 CRITICAL IMAGE-LEVEL STORAGE PROTECTION ---
+ENV HF_HOME="/app/huggingface_cache" \
+    HF_HUB_CACHE="/app/huggingface_cache/hub" \
+    HF_XET_CACHE="/app/huggingface_cache/xet" \
+    HUGGINGFACE_HUB_CACHE="/app/huggingface_cache/hub" \
+    TRANSFORMERS_CACHE="/app/huggingface_cache/hub" \
+    XDG_CACHE_HOME="/app/xdg_cache" \
+    UV_CACHE_DIR="/app/uv_cache" \
+    TMPDIR="/app/tmp" \
+    TMP="/app/tmp" \
+    TEMP="/app/tmp"
 
 WORKDIR /runner
 
-# Copy dependency definition files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
 
-# Pre-install heavy dependencies so the runtime install is fast
-RUN uv export --no-emit-project --format requirements-txt > requirements.txt && \
-    uv pip install --system --no-cache -r requirements.txt
+# Dynamically compile the pyproject.toml dependencies against the container's environment state.
+# This ensures clearml, dvc, etc. are bolted on without touching or downgrading the core torch layers.
+RUN --mount=type=cache,target=/app/uv_cache \
+    uv pip compile pyproject.toml -o requirements.txt && \
+    uv pip install -r requirements.txt
+
+# Install vllm separately
+RUN --mount=type=cache,target=/app/uv_cache \
+    uv pip install packaging ninja && \
+    uv pip install vllm
 
 COPY runner/entrypoint.sh /runner/entrypoint.sh
 RUN chmod +x /runner/entrypoint.sh
 
-# Always run the set up and start Jupyter lab
+# Always run the setup and start Jupyter lab
 ENTRYPOINT ["/bin/bash", "/runner/entrypoint.sh"]
 
 # Set the default action to execute the current script in the repository

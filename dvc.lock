@@ -14,14 +14,14 @@ stages:
       nfiles: 33
     - path: data/system-prompt.md
       hash: md5
-      md5: 1d627a388d18acb2cd978e4b191de841
-      size: 6694
+      md5: 702bb6cd55b5f8b86fcedfb816e67e7c
+      size: 3626
     - path: src/prepare_dataset.py
       hash: md5
-      md5: baa662dbd24582245d3d486850620597
-      size: 8685
+      md5: f981b558d0704ea3aeca99443e622d5f
+      size: 9057
     outs:
     - path: data/train/dataset.jsonl
       hash: md5
-      md5: 81518dbdf389a1f5fec9e6bb6eef7c61
-      size: 196808
+      md5: 1291fc2c082e83301d80f5b717f42e19
+      size: 206234

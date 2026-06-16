@@ -1,2 +1,36 @@
-base_model: cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit
-# Note: load_in_4bit is omitted because AWQ models are already explicitly formatted in 4-bit
+# --- config/train-mistral4small.yml ---
+base_model: mistralai/Mistral-Small-4-119B-2603
+# DeepSpeed Memory & Sharding Optimizations
+deepspeed_cpu_checkpointing: true
+deepspeed_param_persistence_threshold: 0
+deepspeed_offload_param: false
+deepspeed_offload_optimizer: false
+
+# Liger Kernel Memory & Speed Optimizations
+plugins:
+  - axolotl.integrations.liger.LigerPlugin
+liger_rope: true
+liger_rms_norm: true
+liger_glu_activation: true
+liger_layer_norm: true
+liger_fused_linear_cross_entropy: true
+
+adapter: lora
+load_in_8bit: false
+load_in_4bit: false
+qlora_sharded_model_loading: false
+dataloader_num_workers: 4
+
+# Instruct the underlying loader to load in bfloat16 format on CPU with low memory
+extra_model_config_kwargs:
+  torch_dtype: "bfloat16"
+  low_cpu_mem_usage: true
+
+datasets:
+  - path: data/train/dataset.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content

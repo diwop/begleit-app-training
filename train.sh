@@ -1,21 +1,19 @@
 #!/bin/bash
 set -e
 
-TRAIN=${TRAIN:-"train"}
-
-export HF_HOME="/workspace/huggingface_cache"
-LOG_FILE="/workspace/training_run.log"
-
 cd /runner/repo/
 
-echo "=== Repository Execution Started ==="
-echo "Target Config: config/${TRAIN}.yml"
-echo "Logs will be saved to: $LOG_FILE"
+TRAIN=${TRAIN:-"train"}
 
-# Install (optional) delta between docker image and current state
-echo "Syncing package dependencies..."
-uv export --no-emit-project --format requirements-txt > requirements.txt
-uv pip install --system -r requirements.txt
+export HF_HOME="/app/huggingface_cache"
+LOG_FILE="/app/training_run.log"
+
+# Enable debugging
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+echo "=== Repository Execution Started ==="
+echo "Logs will be saved to: $LOG_FILE"
 
 echo "Pulling dataset from DVC..."
 python -m dvc pull
@@ -31,43 +29,34 @@ set +e
 python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
 
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
+
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+if [ -n "${S3_BUCKET:-}" ]; then
+    echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
+    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${TIMESTAMP}_training_run.log"
+
+    if [ $? -eq 0 ]; then
+        echo "=== S3 Copy Successful! ==="
+    else
+        echo "=== WARNING: S3 Copy Failed! ==="
+        sleep 60 # Keep the pod alive for log download
+    fi
+fi
+
 set -e
 
 # Handle lifecycle, S3 sync & (optional) RunPod shutdown
-
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Training completed successfully!"
-
-    # Check if S3_BUCKET is set and not empty
-    if [ -n "${S3_BUCKET:-}" ]; then
-        echo "S3_BUCKET is set to '${S3_BUCKET}'. Preparing to sync artifacts..."
-        
-        # Install AWS CLI using uv
-        uv pip install --system awscli
-        
-        # Define your target S3 path dynamically
-        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-        S3_TARGET="s3://${S3_BUCKET}/run_${TIMESTAMP}"
-        
-        # Sync the entire output directory
-        echo "Uploading /workspace/output to ${S3_TARGET}..."
-        aws s3 sync /workspace/output "${S3_TARGET}"
-        
-        if [ $? -eq 0 ]; then
-            echo "=== S3 Sync Successful! ==="
-        else
-            echo "=== WARNING: S3 Sync Failed! ==="
-            sleep infinity # Keep the pod alive for manual inspection
-        fi
-    else
-        echo "S3_BUCKET environment variable is not set. Skipping S3 sync."
-    fi
-
 else
     echo "[FATAL] Training failed with exit code $TRAIN_EXIT_CODE."
+    sleep 60 # Keep the pod alive for log download
 fi
 
-if [ -n "$RUNPOD_POD_ID" ]; then
+if [ "${KEEP_ALIVE:-false}" = "true" ]; then
+    echo "KEEP_ALIVE flag is active. Bypassing RunPod shutdown API."
+    echo "Pipeline complete. Returning control to terminal."
+elif [ -n "$RUNPOD_POD_ID" ]; then
     echo "RunPod environment detected. Shutting down pod to save costs..."
     curl -s --request POST "https://api.runpod.io/graphql" \
     --header "Authorization: Bearer $RUNPOD_API_KEY" \
