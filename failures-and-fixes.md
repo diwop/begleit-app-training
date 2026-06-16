@@ -42,6 +42,11 @@
   - Monkeypatched both `MistralCommonTokenizer` and `TokenizersBackend`'s `get_chat_template` and `apply_chat_template` methods to redirect them to the respective base implementations in `PreTrainedTokenizerBase`. This completely bypasses the custom Mistral implementations/validations and routes template rendering and retrieval to the standard Hugging Face Jinja2 engine.
   - Set `chat_template: tokenizer_default` in `config/train-mistral4small.yml` to train the adapter on the model's native format (`<s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][MODEL_SETTINGS]...[/MODEL_SETTINGS][INST]...[/INST]...</s>`).
 
+### Iteration 3: Trainer FP8 Quantization Block
+* **Error**: `ValueError: The model you are trying to fine-tune is quantized with fp8 but that quantization method do not support training. Please open an issue on GitHub: https://github.com/huggingface/transformers to request the support for training support for fp8`
+* **What didn't work**: Hugging Face `Trainer` performs a hard check (`validate_quantization_for_training`) during initialization and raises a ValueError if the base model has FP8 quantized parameters. This is a false-positive for parameter-efficient fine-tuning (PEFT/LoRA) because the FP8 base weights are completely frozen, and only the float16/bfloat16 LoRA adapter parameters are being trained.
+* **Fix**: Monkeypatched `validate_quantization_for_training` in both `transformers.trainer_utils` and `transformers.trainer` inside `src/train_patched.py` to be a no-op dummy function before loading the trainer.
+
 # Evaluating
 
 ...

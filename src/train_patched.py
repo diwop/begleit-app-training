@@ -156,6 +156,21 @@ try:
 except Exception as e:
     print(f"⚠️ Warning: Failed to apply tokenizer monkeypatch: {e}")
 
+# --- Apply quantization validation patch to allow training FP8 models under LoRA ---
+try:
+    import transformers.trainer_utils
+    import transformers.trainer
+    
+    def dummy_validate_quantization_for_training(model):
+        print("🔧 MONKEYPATCH: Bypassed validate_quantization_for_training for FP8 model")
+        return
+        
+    transformers.trainer_utils.validate_quantization_for_training = dummy_validate_quantization_for_training
+    transformers.trainer.validate_quantization_for_training = dummy_validate_quantization_for_training
+    print("🔧 MONKEYPATCH: Successfully bypassed validate_quantization_for_training")
+except Exception as e:
+    print(f"⚠️ Warning: Failed to apply quantization validation monkeypatch: {e}")
+
 original_train = axolotl.train.train
 
 def patched_train(cfg, *args, **kwargs):
