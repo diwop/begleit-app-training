@@ -1,5 +1,6 @@
 # --- config/train-gemma4.yml ---
 base_model: google/gemma-4-26b-a4b-it
+attn_implementation: sdpa
 
 # Set to standard lora since the base model is unquantized bfloat16
 adapter: lora

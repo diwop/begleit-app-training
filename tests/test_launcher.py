@@ -9,7 +9,7 @@ orig_torch = sys.modules.get('torch')
 mock_torch_obj = MagicMock()
 sys.modules['torch'] = mock_torch_obj
 
-from src.launcher import merge_configs, main
+from src.launcher import merge_configs, main, run_training_job
 
 # Cleanup sys.modules state immediately so other tool layers aren't polluted
 if orig_torch is not None:
@@ -79,3 +79,24 @@ def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds,
     mock_exists.side_effect = lambda path: True if (path.endswith(".yml") or "evaluation.py" in path) else False
 
     main()
+
+
+@patch("src.launcher.merge_configs")
+@patch("src.launcher.generate_runtime_deepspeed")
+@patch("src.launcher.OmegaConf.save")
+@patch("src.launcher.os.path.exists")
+def test_run_training_job_respects_attn_implementation(mock_exists, mock_conf_save, mock_gen_ds, mock_merge, mock_subprocess):
+    """Verifies that the launcher uses flash_attention_2 by default, but respects custom configurations."""
+    mock_exists.return_value = False
+    
+    # Test case 1: Default behavior when no attn_implementation is specified
+    mock_cfg_1 = {"base_model": "some-model"}
+    mock_merge.return_value = mock_cfg_1
+    run_training_job("config/dummy.yml", num_gpus=1, run_id="test_run")
+    assert mock_cfg_1.get("attn_implementation") == "flash_attention_2"
+
+    # Test case 2: Overridden behavior when attn_implementation is specified in configuration
+    mock_cfg_2 = {"base_model": "some-model", "attn_implementation": "sdpa"}
+    mock_merge.return_value = mock_cfg_2
+    run_training_job("config/dummy.yml", num_gpus=1, run_id="test_run")
+    assert mock_cfg_2.get("attn_implementation") == "sdpa"

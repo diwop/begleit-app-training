@@ -128,8 +128,9 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     if "extra_model_config_kwargs" in merged_cfg and "torch_dtype" in merged_cfg["extra_model_config_kwargs"]:
         merged_cfg["torch_dtype"] = merged_cfg["extra_model_config_kwargs"]["torch_dtype"]
 
-    # Enforce high-performance FlashAttention-2 backend globally
-    merged_cfg["attn_implementation"] = "flash_attention_2"
+    # Enforce high-performance FlashAttention-2 backend globally unless overridden in configuration
+    if "attn_implementation" not in merged_cfg:
+        merged_cfg["attn_implementation"] = "flash_attention_2"
 
     # Generate and link the unified VRAM-centric DeepSpeed configuration file
     generate_runtime_deepspeed(runtime_ds_path)
