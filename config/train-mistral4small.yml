@@ -3,8 +3,8 @@ base_model: mistralai/Mistral-Small-4-119B-2603
 # DeepSpeed Memory & Sharding Optimizations
 deepspeed_cpu_checkpointing: true
 deepspeed_param_persistence_threshold: 0
-deepspeed_offload_param: false
-deepspeed_offload_optimizer: false
+deepspeed_offload_param: true
+deepspeed_offload_optimizer: true
 
 # Liger Kernel Memory & Speed Optimizations
 plugins:
@@ -20,10 +20,10 @@ load_in_8bit: false
 load_in_4bit: false
 qlora_sharded_model_loading: false
 
-# Instruct the underlying loader to keep parameters in native FP8 format and load on GPU
+# Instruct the underlying loader to load in bfloat16 format on CPU with low memory
 extra_model_config_kwargs:
-  torch_dtype: "float8_e4m3fn"
-  low_cpu_mem_usage: false
+  torch_dtype: "bfloat16"
+  low_cpu_mem_usage: true
 
 datasets:
   - path: data/train/dataset.jsonl
