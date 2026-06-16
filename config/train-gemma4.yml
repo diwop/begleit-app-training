@@ -7,6 +7,8 @@ gradient_checkpointing_kwargs:
 # DeepSpeed Memory & Sharding Optimizations
 deepspeed_cpu_checkpointing: true
 deepspeed_param_persistence_threshold: 0
+deepspeed_offload_param: true
+deepspeed_offload_optimizer: true
 
 # Liger Kernel Memory & Speed Optimizations
 plugins:
