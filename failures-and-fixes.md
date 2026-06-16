@@ -67,6 +67,11 @@
 * **What didn't work**: Under DeepSpeed Stage 3, unless `zero3_init_flag` is explicitly set to `true` in the DeepSpeed config file, Hugging Face `transformers` does not use the `deepspeed.zero.Init()` context manager during model loading. Consequently, all 4 ranks load the entire 119B model into CPU memory in parallel before partitioning it. This causes a massive memory spike (4 x 119 GB = 476 GB + overhead, exceeding 500 GB) which triggers system paging/thrashing or OOM crashes.
 * **Fix**: Added `"zero3_init_flag": true` to the root level of the DeepSpeed configuration dynamically compiled in `src/launcher.py`. This instructs `transformers` to wrap model loading in `deepspeed.zero.Init()`, sharding the weights on-the-fly directly to the GPU VRAM as they are loaded, keeping CPU memory usage extremely low.
 
+### Iteration 8: Persistent High CPU RAM Usage during model loading (DeepSpeed Zero Init bypass)
+* **Error**: CPU RAM spikes to 91% (over 650 GB) during loading while VRAM remains at 1%.
+* **What didn't work**: Merely adding `"zero3_init_flag": true` inside the DeepSpeed configuration is insufficient if we launch the training script via a standard `accelerate launch` command without DeepSpeed flags. Because `accelerate` is unaware of DeepSpeed during script launch, it does not set the required environment hooks, causing Hugging Face to load the model on CPU inside each rank's thread before initializing the DeepSpeed engine. This results in the same parallel 500+ GB CPU memory spike and subsequent thrashing.
+* **Fix**: Modified `src/launcher.py` to pass `--use_deepspeed` and `--deepspeed_config_file` arguments directly to the `accelerate launch` shell call. This forces `accelerate` to configure the DeepSpeed ZeRO-3 Init context manager globally at launch, ensuring that the 119B model parameters are created directly sharded on the GPU devices as they are loaded, keeping CPU RAM usage minimal.
+
 # Evaluating
 
 ...

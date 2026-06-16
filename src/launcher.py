@@ -180,12 +180,15 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         print(f"\n[SKIP] EVAL=true and valid adapter discovered at '{output_dir}'. Bypassing training pass.")
         return output_dir, merged_cfg
 
-    # Formulate the multi-GPU launch execution array command
+    # Formulate the multi-GPU launch execution array command with DeepSpeed integration
+    # This ensures accelerate launches with the Zero-3 Init context active, sharding the model on load
     cmd = [
         "accelerate", "launch",
         "--multi_gpu",
         "--num_machines", "1",
         "--num_processes", str(num_gpus),
+        "--use_deepspeed",
+        "--deepspeed_config_file", runtime_ds_path,
         "src/train_patched.py",
         temp_yaml_path
     ]
