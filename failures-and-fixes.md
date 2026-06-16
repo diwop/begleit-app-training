@@ -77,6 +77,11 @@
 * **What didn't work**: Passing both `--multi_gpu` and `--use_deepspeed` to the `accelerate launch` command. `accelerate` enforces strict mutual exclusivity among these strategy flags because `--use_deepspeed` automatically sets up and manages the multi-GPU environment parameters.
 * **Fix**: Removed `--multi_gpu` from the launcher command array in `src/launcher.py` when DeepSpeed is enabled, letting `--use_deepspeed` handle the multi-GPU orchestration internally while still specifying the GPU process count via `--num_processes`.
 
+### Iteration 10: CPU RAM Out of Memory (OOM) during training due to FP8 / low_cpu_mem_usage conflict with DeepSpeed Stage 3
+* **Error**: `Root Cause (first observed failure): [2]: traceback : Signal 9 (SIGKILL) received by PID 7279` / CPU RAM spikes and gets killed.
+* **What didn't work**: Using `torch_dtype: "float8_e4m3fn"` and `low_cpu_mem_usage: true` with DeepSpeed Stage 3. DeepSpeed Stage 3 is fundamentally incompatible with the Hugging Face `low_cpu_mem_usage=True` flag. By telling HF to load the model on CPU, it bypassed the DeepSpeed ZeRO-3 `zero.Init()` partitioning, causing the 119B model parameters to load natively on CPU and remain there (VRAM stayed at 1%). When training started, CPU memory spiked as the trainer tried to operate on/copy/upcast the 119B model on CPU, eventually exhausting the host's 712 GB RAM and getting SIGKILLed.
+* **Fix**: Switched `torch_dtype` to `"bfloat16"` and removed `low_cpu_mem_usage: true` in `config/train-mistral4small.yml` to ensure native DeepSpeed ZeRO-3 compatibility. Enabled CPU parameter and optimizer offloading (`deepspeed_offload_param: true` and `deepspeed_offload_optimizer: true`) so that the 238 GB `bfloat16` model weights are successfully partitioned across CPU memory (~60 GB per rank) and streamed to the GPUs layer-by-layer during the forward/backward passes. Since LoRA training has very few trainable parameters (~73M), optimizer states and gradients are tiny (~1 GB total) and do not cause CPU RAM or GPU VRAM exhaustion.
+
 # Evaluating
 
 ...
