@@ -180,7 +180,7 @@ def main():
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn" # CRITICAL for parent-child CUDA isolation
 
     # Enforce homogeneous communication paths across the 4x L40S cluster nodes.
-    print("🛡️  Enforcing uniform NCCL distributed communication transport paths...")
+    print("🛡️ Enforcing uniform NCCL distributed communication transport paths...")
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
 

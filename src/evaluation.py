@@ -105,15 +105,15 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             full_string = tokenizer.apply_chat_template(
                 messages, 
                 tokenize=False, 
-                add_generation_prompt=True,
-                chat_template_kwargs=chat_template_kwargs
+                add_generation_prompt=True
             )
             templated_inputs.append(full_string)
             
         sampling_params = SamplingParams(
             temperature=0.3,
             top_p=0.95,
-            max_tokens=4096
+            max_tokens=8192,
+            skip_special_tokens=False
         )
         
         generate_kwargs = {}
@@ -128,21 +128,22 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             raw_text = out.outputs[0].text.strip()
             reasoning_trace = ""
             
-            # Inspect native vLLM engine attributes if populated programmatically
-            if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
-                reasoning_trace = out.outputs[0].reasoning.strip()
-            elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
-                reasoning_trace = out.outputs[0].reasoning_content.strip()
+            # # FIX 2: Broad structural regex to intercept native control tokens and text tags
+            # think_match = re.search(
+            #     r"(?:<\|channel\|>thought|<|thought\|>|<(?:think|thought)>)(.*?)(?:<\|channel\|>|</(?:think|thought)>)", 
+            #     raw_text, 
+            #     re.DOTALL | re.IGNORECASE
+            # )
             
-            # Fallback inline XML tag interception for offline generator streams
-            think_match = re.search(r"<(?:think|thought)>(.*?)</(?:think|thought)>", raw_text, re.DOTALL)
-            if think_match:
-                if not reasoning_trace:
-                    reasoning_trace = think_match.group(1).strip()
-                    
-                # CRITICAL: Clean the thought block out of the final text response payload.
-                # This protects textstat metrics from being skewed by ungrammatical token strings.
-                raw_text = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", raw_text, flags=re.DOTALL).strip()
+            # if think_match:
+            #     reasoning_trace = think_match.group(1).strip()
+            #     # Clean the structural thought block out of the final display text
+            #     raw_text = re.sub(
+            #         r"(?:<\|channel\|>thought|<|thought\|>|<(?:think|thought)>).*?(?:<\|channel\|>|</(?:think|thought)>)", 
+            #         "", 
+            #         raw_text, 
+            #         flags=re.DOTALL | re.IGNORECASE
+            #     ).strip()
                 
             # Append as a tuple so metrics loop can map both outputs cleanly
             generated_responses.append((raw_text, reasoning_trace))
