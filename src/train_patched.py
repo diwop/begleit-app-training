@@ -140,7 +140,8 @@ try:
     try:
         from transformers.tokenization_mistral_common import MistralCommonTokenizer
         MistralCommonTokenizer.apply_chat_template = PreTrainedTokenizerBase.apply_chat_template
-        print("🔧 MONKEYPATCH: Successfully patched MistralCommonTokenizer.apply_chat_template")
+        MistralCommonTokenizer.get_chat_template = PreTrainedTokenizerBase.get_chat_template
+        print("🔧 MONKEYPATCH: Successfully patched MistralCommonTokenizer.apply_chat_template and get_chat_template")
     except ImportError:
         pass
 
@@ -148,7 +149,8 @@ try:
     try:
         from transformers.tokenization_utils_tokenizers import TokenizersBackend
         TokenizersBackend.apply_chat_template = PreTrainedTokenizerBase.apply_chat_template
-        print("🔧 MONKEYPATCH: Successfully patched TokenizersBackend.apply_chat_template")
+        TokenizersBackend.get_chat_template = PreTrainedTokenizerBase.get_chat_template
+        print("🔧 MONKEYPATCH: Successfully patched TokenizersBackend.apply_chat_template and get_chat_template")
     except ImportError:
         pass
 except Exception as e:

@@ -36,9 +36,10 @@
 * **What didn't work**: 
   - Using `chat_template: chatml` failed because `MistralCommonTokenizer` overrides `apply_chat_template` to delegate to `mistral-common` validation rules (which expect the conversation to end in `User` or `Tool` for serving).
   - Replacing `apply_chat_template` and switching `chat_template` to `tokenizer_default` triggered a secondary error: `ValueError: chat_template choice is tokenizer_default but tokenizer's chat_template is null. Please add a chat_template in tokenizer config`. This occurs because `MistralCommonTokenizer` does not populate the `chat_template` property on the instance from `tokenizer_config.json`.
+  - Adding the `chat_template` property getter fallback triggered a third error: `NotImplementedError: MistralCommonBackend does not implement get_chat_template`. This occurs because `PreTrainedTokenizerBase.apply_chat_template` internally calls `self.get_chat_template(chat_template, tools)`, which is overridden in `MistralCommonTokenizer` to raise `NotImplementedError`.
 * **Fix**: 
   - Added a class property getter monkeypatch to `PreTrainedTokenizerBase` in `src/train_patched.py` that intercepts `chat_template` lookups. If `chat_template` is `None` and the tokenizer class/model is Mistral-based, it returns the official Mistral Small 4 chat template string.
-  - Replaced the tokenizer classes' `apply_chat_template` with `PreTrainedTokenizerBase.apply_chat_template` to delegate rendering to the standard Jinja2 engine, bypassing `mistral-common`'s validation completely.
+  - Monkeypatched both `MistralCommonTokenizer` and `TokenizersBackend`'s `get_chat_template` and `apply_chat_template` methods to redirect them to the respective base implementations in `PreTrainedTokenizerBase`. This completely bypasses the custom Mistral implementations/validations and routes template rendering and retrieval to the standard Hugging Face Jinja2 engine.
   - Set `chat_template: tokenizer_default` in `config/train-mistral4small.yml` to train the adapter on the model's native format (`<s>[SYSTEM_PROMPT]...[/SYSTEM_PROMPT][MODEL_SETTINGS]...[/MODEL_SETTINGS][INST]...[/INST]...</s>`).
 
 # Evaluating
