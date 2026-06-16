@@ -181,8 +181,6 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
     return generated_responses
 
 def main():
-    os.environ["VLLM_USE_V1"] = "0"
-    
     print("📋 Validating structural configurations...", flush=True)
     if not os.path.exists("data/system-prompt.md") or not os.path.exists("data/prompt-template.md"):
         raise FileNotFoundError("❌ Pipeline Failure: Configuration blueprint files are missing.")
@@ -271,15 +269,15 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
     EVALUATION_PIPELINE = []
-    # # Mistral stays on compressed-tensors AWQ layout
-    # EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-    #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
+    # Mistral stays on compressed-tensors AWQ layout
+    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
+    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
-    # Gemma routes through the official model repo with hardware native FP8 execution
-    EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
-    if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
+    # # Gemma routes through the official model repo with hardware native FP8 execution
+    # EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
+    # if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
