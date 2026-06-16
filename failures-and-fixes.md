@@ -72,6 +72,11 @@
 * **What didn't work**: Merely adding `"zero3_init_flag": true` inside the DeepSpeed configuration is insufficient if we launch the training script via a standard `accelerate launch` command without DeepSpeed flags. Because `accelerate` is unaware of DeepSpeed during script launch, it does not set the required environment hooks, causing Hugging Face to load the model on CPU inside each rank's thread before initializing the DeepSpeed engine. This results in the same parallel 500+ GB CPU memory spike and subsequent thrashing.
 * **Fix**: Modified `src/launcher.py` to pass `--use_deepspeed` and `--deepspeed_config_file` arguments directly to the `accelerate launch` shell call. This forces `accelerate` to configure the DeepSpeed ZeRO-3 Init context manager globally at launch, ensuring that the 119B model parameters are created directly sharded on the GPU devices as they are loaded, keeping CPU RAM usage minimal.
 
+### Iteration 9: accelerate launch mutually exclusive argument validation failure
+* **Error**: `ValueError: You can only use one of --cpu, --multi_gpu, --tpu, --use_deepspeed, --use_fsdp at a time.`
+* **What didn't work**: Passing both `--multi_gpu` and `--use_deepspeed` to the `accelerate launch` command. `accelerate` enforces strict mutual exclusivity among these strategy flags because `--use_deepspeed` automatically sets up and manages the multi-GPU environment parameters.
+* **Fix**: Removed `--multi_gpu` from the launcher command array in `src/launcher.py` when DeepSpeed is enabled, letting `--use_deepspeed` handle the multi-GPU orchestration internally while still specifying the GPU process count via `--num_processes`.
+
 # Evaluating
 
 ...
