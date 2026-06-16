@@ -23,5 +23,6 @@ Then I'll notify you when it failed/succeeded and it's log is written to S3.
 
 Please make sure that you are confident with a new run.
 It's expensive to run code on GPUs.
+The code will run either on 2x L40S (Gemma 4 only), or 4x (Mistral and Gemma)
 
 Critical: If you edit files isolate your changes. Do not change comments, configurations in parts that do not affect our current short term goal.
