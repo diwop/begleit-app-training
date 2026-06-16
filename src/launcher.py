@@ -122,6 +122,14 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     temp_yaml_path = f".merged-{config_filename}.yml"
     runtime_ds_path = f".ds-config-{config_filename}.json"
 
+    # -------------------------------------------------------------------------
+    # NATIVE FLOAT8 DATATYPE RECONCILIATION
+    # -------------------------------------------------------------------------
+    # Pull the native datatype to the root level to prevent Axolotl from 
+    # forcing a conflicting BF16 upcast on pretrained FP8 model layers.
+    if "extra_model_config_kwargs" in merged_cfg and "torch_dtype" in merged_cfg["extra_model_config_kwargs"]:
+        merged_cfg["torch_dtype"] = merged_cfg["extra_model_config_kwargs"]["torch_dtype"]
+
     # Enforce high-performance FlashAttention-2 backend globally
     merged_cfg["attn_implementation"] = "flash_attention_2"
 
