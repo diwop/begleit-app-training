@@ -64,8 +64,6 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Show Image Size
         run: |
           IMAGE_NAME="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
