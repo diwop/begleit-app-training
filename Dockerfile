@@ -1,6 +1,6 @@
 # --- Stage 1: Build & Compile ---
-# We use CUDA 12.4.1 to leverage pre-compiled wheels for flash-attn
-ARG CUDA_VERSION=12.4.1
+# We use CUDA 12.6.1 because it has ubuntu24.04 support, and allows leveraging pre-compiled cu12 wheels for flash-attn
+ARG CUDA_VERSION=12.6.1
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
