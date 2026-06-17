@@ -69,10 +69,7 @@ jobs:
             uv pip compile src-train/pyproject.toml -o req-train.txt
             uv pip install --no-cache -r req-train.txt
             
-            echo 'Layering backend execution infrastructure...'
-            uv pip compile src-eval/pyproject.toml -o req-eval.txt
-            uv pip install --no-cache -r req-eval.txt
-            
+
             echo 'Executing Version Integrity Smoke Test...'
             python tests/container_smoke_test.py
             "
