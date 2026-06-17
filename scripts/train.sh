@@ -3,7 +3,7 @@ set -e
 
 cd /runner/repo/
 
-TRAIN=${TRAIN:-"train"}
+
 
 export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"
@@ -26,7 +26,7 @@ set +e
 # Use 'tee' to print logs to the screen AND save them to the persistent disk.
 # 2>&1 captures both standard output and error messages
 # -u enforces unbuffered output by python
-python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
+python -u src-train/train.py 2>&1 | tee "$LOG_FILE"
 
 TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 

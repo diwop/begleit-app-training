@@ -1,6 +1,9 @@
 # --- tests/test_launcher.py ---
 import sys
 import os
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src-train")))
+
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -9,7 +12,7 @@ orig_torch = sys.modules.get('torch')
 mock_torch_obj = MagicMock()
 sys.modules['torch'] = mock_torch_obj
 
-from src.launcher import merge_configs, main, run_training_job
+from train import merge_configs, main, run_training_job
 
 # Cleanup sys.modules state immediately so other tool layers aren't polluted
 if orig_torch is not None:
@@ -27,12 +30,12 @@ def mock_cuda():
 
 @pytest.fixture
 def mock_subprocess():
-    with patch("src.launcher.subprocess.run") as mock:
+    with patch("train.subprocess.run") as mock:
         yield mock
 
 @pytest.fixture(autouse=True)
 def mock_makedirs():
-    with patch("src.launcher.os.makedirs") as mock:
+    with patch("train.os.makedirs") as mock:
         yield mock
 
 # --- NEW FIXTURE ---
@@ -43,7 +46,7 @@ def mock_hf_env_and_download(monkeypatch):
     and mocks snapshot_download to prevent massive network fetches during CI runs.
     """
     monkeypatch.setenv("HF_TOKEN", "mock_hf_token_for_ci_pipeline")
-    with patch("src.launcher.snapshot_download") as mock_download:
+    with patch("train.snapshot_download") as mock_download:
         yield mock_download
 
 
@@ -56,10 +59,10 @@ def test_no_cuda_exits(mock_cuda):
     assert exc.value.code == 1
 
 
-@patch("src.launcher.merge_configs")
-@patch("src.launcher.generate_runtime_deepspeed")
-@patch("src.launcher.OmegaConf.save")
-@patch("src.launcher.os.path.exists")
+@patch("train.merge_configs")
+@patch("train.generate_runtime_deepspeed")
+@patch("train.OmegaConf.save")
+@patch("train.os.path.exists")
 def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds, mock_merge, mock_cuda, mock_subprocess, monkeypatch):
     """
     Verifies the complete sequential pipeline loop when S3 backups are disabled.
@@ -81,10 +84,10 @@ def test_pipeline_execution_without_s3(mock_exists, mock_conf_save, mock_gen_ds,
     main()
 
 
-@patch("src.launcher.merge_configs")
-@patch("src.launcher.generate_runtime_deepspeed")
-@patch("src.launcher.OmegaConf.save")
-@patch("src.launcher.os.path.exists")
+@patch("train.merge_configs")
+@patch("train.generate_runtime_deepspeed")
+@patch("train.OmegaConf.save")
+@patch("train.os.path.exists")
 def test_run_training_job_respects_attn_implementation(mock_exists, mock_conf_save, mock_gen_ds, mock_merge, mock_subprocess):
     """Verifies that the launcher uses flash_attention_2 by default, but respects custom configurations."""
     mock_exists.return_value = False
@@ -102,12 +105,12 @@ def test_run_training_job_respects_attn_implementation(mock_exists, mock_conf_sa
     assert mock_cfg_2.get("attn_implementation") == "sdpa"
 
 
-@patch("src.launcher.merge_configs")
-@patch("src.launcher.generate_runtime_deepspeed")
-@patch("src.launcher.OmegaConf.save")
-@patch("src.launcher.os.path.exists")
-@patch("src.launcher.pre_download_models")
-@patch("src.launcher.run_training_job")
+@patch("train.merge_configs")
+@patch("train.generate_runtime_deepspeed")
+@patch("train.OmegaConf.save")
+@patch("train.os.path.exists")
+@patch("train.pre_download_models")
+@patch("train.run_training_job")
 def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mock_conf_save, mock_gen_ds, mock_merge, mock_cuda):
     """
     Verifies that Mistral configurations are only run on exactly 8 GPUs,
@@ -117,9 +120,9 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
     mock_exists.return_value = True
     
     # We patch TRAINING_PIPELINE in launcher module to have both Gemma and Mistral configs
-    import src.launcher
-    original_pipeline = src.launcher.TRAINING_PIPELINE
-    src.launcher.TRAINING_PIPELINE = [
+    import train
+    original_pipeline = train.TRAINING_PIPELINE
+    train.TRAINING_PIPELINE = [
         "config/train-mistral4small.yml",
         "config/train-gemma4.yml"
     ]
@@ -133,7 +136,7 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
         mock_run_job.reset_mock()
         mock_pre_download.reset_mock()
         
-        src.launcher.main()
+        train.main()
         
         # Verify only Gemma is passed to download and run
         mock_pre_download.assert_called_once_with(["config/train-gemma4.yml"])
@@ -145,7 +148,7 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
         mock_run_job.reset_mock()
         mock_pre_download.reset_mock()
         
-        src.launcher.main()
+        train.main()
         
         # Verify both are downloaded and run
         mock_pre_download.assert_called_once_with(["config/train-mistral4small.yml", "config/train-gemma4.yml"])
@@ -155,4 +158,4 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
         assert "config/train-gemma4.yml" in called_configs
         
     finally:
-        src.launcher.TRAINING_PIPELINE = original_pipeline
+        train.TRAINING_PIPELINE = original_pipeline

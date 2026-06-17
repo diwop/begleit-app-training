@@ -1,10 +1,10 @@
 stages:
   prepare_data:
-    cmd: uv run python src/prepare_dataset.py
+    cmd: uv run --project src-train python src-train/prepare_dataset.py
     deps:
       - data/system-prompt.md
       - data/prompt-template.md
       - data/raw/
-      - src/prepare_dataset.py
+      - src-train/prepare_dataset.py
     outs:
       - data/train/dataset.jsonl # {"id": "<number>", "system": "<content-of-system-prompt>", "user": "<prompt-template with %INPUT% replaced by the Standardsprache text>", "assistant": "<Leichte_Sprache text>"}

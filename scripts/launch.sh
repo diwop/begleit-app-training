@@ -7,6 +7,22 @@ DEFAULT_REPO="https://github.com/diwop/begleit-app-training.git"
 BRANCH=${BRANCH:-"main"}
 REPO_URL=${REPO_URL:-"$DEFAULT_REPO"}
 
+# 1. PERMANENTLY activate Axolotl's pre-built master environment!
+export VIRTUAL_ENV="/workspace/axolotl-venv"
+export PATH="/workspace/axolotl-venv/bin:$PATH"
+
+# --- 💾 CRITICAL IMAGE-LEVEL STORAGE PROTECTION ---
+export HF_HOME="/app/huggingface_cache"
+export HF_HUB_CACHE="/app/huggingface_cache/hub"
+export HF_XET_CACHE="/app/huggingface_cache/xet"
+export HUGGINGFACE_HUB_CACHE="/app/huggingface_cache/hub"
+export TRANSFORMERS_CACHE="/app/huggingface_cache/hub"
+export XDG_CACHE_HOME="/app/xdg_cache"
+export UV_CACHE_DIR="/app/uv_cache"
+export TMPDIR="/app/tmp"
+export TMP="/app/tmp"
+export TEMP="/app/tmp"
+
 echo "=== Initializing Worker Node ==="
 
 # Ensure high-capacity directory structures are present on the volume mount
@@ -35,17 +51,22 @@ echo "Cloning branch '$BRANCH' from $REPO_URL..."
 rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
-# Install (optional) dependency delta
 cd /runner/repo
-uv pip compile pyproject.toml -o requirements.txt
-uv pip install -r requirements.txt
-uv pip install vllm
 
-# Prevent loop of death and manage script hand-offs cleanly
-if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
-    echo "Defaulting execution to repository training script..."
-    exec bash /runner/repo/train.sh
+echo "Installing training dependencies into axolotl-venv..."
+uv pip compile src-train/pyproject.toml -o src-train/requirements.txt
+uv pip install -r src-train/requirements.txt
+
+if [ "${SKIP_TRAIN:-false}" != "true" ]; then
+    echo "Starting training phase..."
+    bash scripts/train.sh
 else
-    echo "Handing off execution to: $@"
-    exec "$@"
+    echo "Skipping training phase..."
+fi
+
+if [ "${SKIP_EVAL:-false}" != "true" ]; then
+    echo "Starting evaluation phase..."
+    bash scripts/eval.sh
+else
+    echo "Skipping evaluation phase..."
 fi
