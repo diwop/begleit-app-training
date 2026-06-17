@@ -66,8 +66,7 @@ jobs:
             --entrypoint bash \
             $BASE_IMAGE -c "
             echo 'Compiling utility and data prep blueprints...'
-            uv pip compile src-train/pyproject.toml -o req-train.txt
-            uv pip install --no-cache -r req-train.txt
+            uv pip install --no-cache src-train/
             
 
             echo 'Executing Version Integrity Smoke Test...'

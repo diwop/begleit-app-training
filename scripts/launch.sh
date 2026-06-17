@@ -54,8 +54,7 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 
 echo "Installing training dependencies into axolotl-venv..."
-uv pip compile src-train/pyproject.toml -o src-train/requirements.txt
-uv pip install -r src-train/requirements.txt
+uv pip install src-train/
 
 if [ "${SKIP_TRAIN:-false}" != "true" ]; then
     echo "Starting training phase..."
