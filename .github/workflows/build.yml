@@ -57,7 +57,7 @@ jobs:
           sudo time rm -rf /usr/local/lib/android
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
-      - name: Build and push Docker image
+      - name: Run docker build
         uses: docker/build-push-action@v7
         with:
           context: .

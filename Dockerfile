@@ -34,8 +34,8 @@ RUN uv pip install packaging ninja setuptools-rust setuptools wheel psutil
 
 # Install Axolotl with flash-attn and deepspeed (this compiles custom kernels)
 # Note: For now, sglang is omitted as requested.
-# Set MAX_JOBS=2 to prevent GitHub Action runner OOM kills and use -v to stream compilation logs
-ENV MAX_JOBS=2
+# Set MAX_JOBS=1 to prevent GitHub Action runner OOM kills (runner only has 7GB RAM)
+ENV MAX_JOBS=1
 RUN uv pip install -v --no-build-isolation "axolotl[flash-attn,deepspeed] @ git+https://github.com/axolotl-ai-cloud/axolotl.git"
 RUN uv pip install liger-kernel
 
