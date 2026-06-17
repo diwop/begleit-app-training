@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock
 import pytest
-from src.prepare_dataset import calculate_token_count
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src-train")))
+from prepare_dataset import calculate_token_count
 
 def test_calculate_token_count_list():
     # Case 1: apply_chat_template with return_dict=False successfully returns a list of tokens

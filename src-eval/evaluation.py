@@ -10,10 +10,9 @@ from datetime import datetime, UTC
 from pathlib import Path
 import torch
 import boto3
-from vllm import LLM, SamplingParams
-from transformers import AutoTokenizer
-from vllm.lora.request import LoRARequest
-from vllm.distributed.parallel_state import destroy_model_parallel
+# from vllm import LLM, SamplingParams
+# from vllm.lora.request import LoRARequest
+# from vllm.distributed.parallel_state import destroy_model_parallel
 import textstat
 
 def get_raw_metrics(text: str) -> tuple:
@@ -62,102 +61,103 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
             available_gpus = 2
 
-        llm_kwargs = {
-            "model": model_id,
-            "quantization": quantization_type,
-            "tensor_parallel_size": available_gpus,
-            "max_model_len": max_len,
-            "trust_remote_code": True,
-            "disable_custom_all_reduce": True,
-            "enforce_eager": True,
-            "gpu_memory_utilization": 0.85
-        }
+        pass
+        # llm_kwargs = {
+        #     "model": model_id,
+        #     "quantization": quantization_type,
+        #     "tensor_parallel_size": available_gpus,
+        #     "max_model_len": max_len,
+        #     "trust_remote_code": True,
+        #     "disable_custom_all_reduce": True,
+        #     "enforce_eager": True,
+        #     "gpu_memory_utilization": 0.85
+        # }
 
-        # Dynamic parameter routing per architecture target
-        if is_gemma:
-            print("💎 Adjusting execution environment parameters for Native Gemma 4 FP8...")
-            llm_kwargs["dtype"] = "bfloat16" # Protects weights from FP16 NaN math breakdowns
+        # # Dynamic parameter routing per architecture target
+        # if is_gemma:
+        #     print("💎 Adjusting execution environment parameters for Native Gemma 4 FP8...")
+        #     llm_kwargs["dtype"] = "bfloat16" # Protects weights from FP16 NaN math breakdowns
             
-        if is_mistral:
-            print("🛑 Disabling vision profiling modalities for text-only pipeline...")
-            llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
-            print("⚙️  Activating specialized Mistral tokenizer backend...")
-            llm_kwargs["tokenizer_mode"] = "mistral"
+        # if is_mistral:
+        #     print("🛑 Disabling vision profiling modalities for text-only pipeline...")
+        #     llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
+        #     print("⚙️  Activating specialized Mistral tokenizer backend...")
+        #     llm_kwargs["tokenizer_mode"] = "mistral"
 
-        if adapter_id:
-            llm_kwargs["enable_lora"] = True
-            llm_kwargs["max_loras"] = 1
+        # if adapter_id:
+        #     llm_kwargs["enable_lora"] = True
+        #     llm_kwargs["max_loras"] = 1
             
-        llm = LLM(**llm_kwargs)
+        # llm = LLM(**llm_kwargs)
         
-        # Build message lists for parallel execution via the chat engine
-        batched_messages = []
-        for prompt_item in evaluation_set:
-            batched_messages.append([
-                {"role": "system", "content": prompt_item["system"]},
-                {"role": "user", "content": prompt_item["templated_user"]}
-            ])
+        # # Build message lists for parallel execution via the chat engine
+        # batched_messages = []
+        # for prompt_item in evaluation_set:
+        #     batched_messages.append([
+        #         {"role": "system", "content": prompt_item["system"]},
+        #         {"role": "user", "content": prompt_item["templated_user"]}
+        #     ])
             
-        # Target Sampling Configurations based on active reasoning paths
-        if is_gemma:
-            sampling_params = SamplingParams(
-                temperature=1.0, # Calibrated baseline for Gemma 4 search path exploitation
-                top_p=0.95,
-                top_k=64,
-                max_tokens=4096,
-                skip_special_tokens=False # CRITICAL: Retain native hardware channel tokens
-            )
-            chat_template_kwargs = {"enable_thinking": True}
-        else:
-            sampling_params = SamplingParams(
-                temperature=0.3,
-                top_p=0.95,
-                max_tokens=4096,
-                skip_special_tokens=False
-            )
-            chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral else {}
+        # # Target Sampling Configurations based on active reasoning paths
+        # if is_gemma:
+        #     sampling_params = SamplingParams(
+        #         temperature=1.0, # Calibrated baseline for Gemma 4 search path exploitation
+        #         top_p=0.95,
+        #         top_k=64,
+        #         max_tokens=4096,
+        #         skip_special_tokens=False # CRITICAL: Retain native hardware channel tokens
+        #     )
+        #     chat_template_kwargs = {"enable_thinking": True}
+        # else:
+        #     sampling_params = SamplingParams(
+        #         temperature=0.3,
+        #         top_p=0.95,
+        #         max_tokens=4096,
+        #         skip_special_tokens=False
+        #     )
+        #     chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral else {}
             
-        generate_kwargs = {}
-        if adapter_id:
-            generate_kwargs["lora_request"] = LoRARequest("spike_adapter_layer", 1, adapter_id)
+        # generate_kwargs = {}
+        # if adapter_id:
+        #     generate_kwargs["lora_request"] = LoRARequest("spike_adapter_layer", 1, adapter_id)
             
-        print(f"⚡ Processing {len(batched_messages)} prompts via unified vLLM Chat Engine...", flush=True)
-        outputs = llm.chat(
-            messages=batched_messages, 
-            sampling_params=sampling_params, 
-            chat_template_kwargs=chat_template_kwargs, 
-            **generate_kwargs
-        )
+        # print(f"⚡ Processing {len(batched_messages)} prompts via unified vLLM Chat Engine...", flush=True)
+        # outputs = llm.chat(
+        #     messages=batched_messages, 
+        #     sampling_params=sampling_params, 
+        #     chat_template_kwargs=chat_template_kwargs, 
+        #     **generate_kwargs
+        # )
         
-        for out in outputs:
-            raw_text = out.outputs[0].text.strip()
-            reasoning_trace = ""
+        # for out in outputs:
+        #     raw_text = out.outputs[0].text.strip()
+        #     reasoning_trace = ""
             
-            # Extract programmatic reasoning channels if populated by the backend
-            if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
-                reasoning_trace = out.outputs[0].reasoning.strip()
-            elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
-                reasoning_trace = out.outputs[0].reasoning_content.strip()
+        #     # Extract programmatic reasoning channels if populated by the backend
+        #     if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
+        #         reasoning_trace = out.outputs[0].reasoning.strip()
+        #     elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
+        #         reasoning_trace = out.outputs[0].reasoning_content.strip()
             
-            # Universal string extraction regex for plain tags and Gemma hardware tokens
-            if not reasoning_trace:
-                think_match = re.search(
-                    r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
-                    raw_text, 
-                    re.DOTALL | re.IGNORECASE
-                )
-                if think_match:
-                    reasoning_trace = think_match.group(1).strip()
+        #     # Universal string extraction regex for plain tags and Gemma hardware tokens
+        #     if not reasoning_trace:
+        #         think_match = re.search(
+        #             r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+        #             raw_text, 
+        #             re.DOTALL | re.IGNORECASE
+        #         )
+        #         if think_match:
+        #             reasoning_trace = think_match.group(1).strip()
                     
-            # Wipe structural thought text sequences entirely out of final textstat payloads
-            raw_text = re.sub(
-                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
-                "", 
-                raw_text, 
-                flags=re.DOTALL | re.IGNORECASE
-            ).strip()
+        #     # Wipe structural thought text sequences entirely out of final textstat payloads
+        #     raw_text = re.sub(
+        #         r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+        #         "", 
+        #         raw_text, 
+        #         flags=re.DOTALL | re.IGNORECASE
+        #     ).strip()
                 
-            generated_responses.append((raw_text, reasoning_trace))
+        #     generated_responses.append((raw_text, reasoning_trace))
             
     except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
@@ -165,14 +165,14 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         
     finally:
         print(f"♻️ Evacuating VRAM channels for next model tracking...", flush=True)
-        try:
-            if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
-                llm.llm_engine.engine_core.shutdown()
-        except Exception: pass
-        try: destroy_model_parallel()
-        except Exception: pass
+        # try:
+        #     if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
+        #         llm.llm_engine.engine_core.shutdown()
+        # except Exception: pass
+        # try: destroy_model_parallel()
+        # except Exception: pass
             
-        if 'llm' in locals(): del llm
+        # if 'llm' in locals(): del llm
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -339,16 +339,16 @@ def main():
         with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
         print(f"💾 Written to local file system: {filename}")
 
-def apply_vllm_mla_hotfix():
-    """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
-    target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
-    if os.path.exists(target_file):
-        with open(target_file, "r", encoding="utf-8") as f: code = f.read()
-        broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
-        fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
-        if broken_string in code:
-            with open(target_file, "w", encoding="utf-8") as f: f.write(code.replace(broken_string, fixed_string))
+# def apply_vllm_mla_hotfix():
+#     """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
+#     target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
+#     if os.path.exists(target_file):
+#         with open(target_file, "r", encoding="utf-8") as f: code = f.read()
+#         broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
+#         fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
+#         if broken_string in code:
+#             with open(target_file, "w", encoding="utf-8") as f: f.write(code.replace(broken_string, fixed_string))
 
 if __name__ == "__main__":
-    apply_vllm_mla_hotfix()
+    # apply_vllm_mla_hotfix()
     main()

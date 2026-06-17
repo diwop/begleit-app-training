@@ -1,3 +1,6 @@
+---
+axolotl_image: axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
+---
 # DiWop Begleit-App Training
 
 Welcome to the `begleit-app-training` repository.
@@ -10,4 +13,4 @@ Use the agentic workflow [`/onboarding`](.agent/workflows/onboarding.md) to get 
 
 See [docs/data.md](docs/data.md) how to add raw data and create the dataset for training.
 
-See [docs/training.md](docs/training.md) how to fine-tune a model.
+See [docs/pipeline.md](docs/pipeline.md) how to fine-tune and evaluate models.

@@ -178,13 +178,6 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     # Extract the string for local launcher asset checks
     output_dir = str(merged_cfg["output_dir"])
 
-    is_eval_mode = os.environ.get("EVAL", "false").lower() == "true"
-    adapter_exists = os.path.exists(os.path.join(output_dir, "adapter_config.json"))
-
-    if is_eval_mode and adapter_exists:
-        print(f"\n[SKIP] EVAL=true and valid adapter discovered at '{output_dir}'. Bypassing training pass.")
-        return output_dir, merged_cfg
-
     # Formulate the launch execution array command with DeepSpeed integration
     # Note: --multi_gpu is omitted because it is mutually exclusive with --use_deepspeed in accelerate launch
     cmd = [
