@@ -1,5 +1,6 @@
 # --- Stage 1: Build & Compile ---
-ARG CUDA_VERSION=13.0.1
+# We use CUDA 12.4.1 to leverage pre-compiled wheels for flash-attn
+ARG CUDA_VERSION=12.4.1
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,16 +27,17 @@ ENV VIRTUAL_ENV=/workspace/axolotl-venv
 RUN uv venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Install PyTorch with CUDA 13.0 support
-RUN uv pip install torch --index-url https://download.pytorch.org/whl/cu130
+# Install PyTorch with CUDA 12.4 support
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 
 # Install build dependencies (needed for setuptools-rust or ninja-based compilations)
 RUN uv pip install packaging ninja setuptools-rust setuptools wheel psutil
 
-# Install Axolotl with flash-attn and deepspeed (this compiles custom kernels)
+# Install pre-compiled flash-attn wheel for PyTorch 2.6.0 and CUDA 12
+RUN uv pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1%2Bcu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+
+# Install Axolotl with flash-attn and deepspeed
 # Note: For now, sglang is omitted as requested.
-# Set MAX_JOBS=1 to prevent GitHub Action runner OOM kills (runner only has 7GB RAM)
-ENV MAX_JOBS=1
 RUN uv pip install -v --no-build-isolation "axolotl[flash-attn,deepspeed] @ git+https://github.com/axolotl-ai-cloud/axolotl.git"
 RUN uv pip install liger-kernel
 
