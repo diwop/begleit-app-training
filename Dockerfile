@@ -1,5 +1,5 @@
 # Optimized for L40S GPUs
-FROM axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
+FROM axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.12.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
