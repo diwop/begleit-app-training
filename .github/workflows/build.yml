@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -25,7 +26,7 @@ jobs:
               - 'uv.lock'
 
   build-docker-image:
-    name: Build and push Docker image
+    name: Build Docker image
     needs: detect-changes
     # Run ONLY IF docker image changed or if the user manually triggered the workflow
     if: needs.detect-changes.outputs.docker_files != '' || github.event_name == 'workflow_dispatch'
@@ -56,7 +57,7 @@ jobs:
           sudo time rm -rf /usr/local/lib/android
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
-      - name: Build and push Docker image
+      - name: Run docker build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -81,6 +82,7 @@ jobs:
             --entrypoint python \
             $IMAGE_NAME tests/container_smoke_test.py
       - name: Push Docker image to GHCR
+        if: github.event_name != 'pull_request'
         run: |
           for tag in ${{ steps.meta.outputs.tags }}; do
             echo "Pushing $tag..."

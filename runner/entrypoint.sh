@@ -39,7 +39,7 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 cd /runner/repo
 uv pip compile pyproject.toml -o requirements.txt
 uv pip install -r requirements.txt
-uv pip install vllm
+
 
 # Prevent loop of death and manage script hand-offs cleanly
 if [ $# -eq 0 ] || [[ "$*" == *"/runner/entrypoint.sh"* ]]; then
