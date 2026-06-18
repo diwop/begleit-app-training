@@ -40,6 +40,8 @@ def pre_download_models(pipeline_configs):
     print("="*60, flush=True)
     
     processed_models = set()
+    s3_bucket = os.environ.get("S3_BUCKET", "")
+    
     for config_path in pipeline_configs:
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"❌ Configuration matrix error: Target file missing '{config_path}'")
@@ -49,8 +51,16 @@ def pre_download_models(pipeline_configs):
         
         if base_model_str and base_model_str not in processed_models:
             print(f"📦 Invoking native hf engine for: '{base_model_str}'...", flush=True)
+            
+            model_dir_name = f"models--{base_model_str.replace('/', '--')}"
+            local_cache_path = f"/app/huggingface_cache/hub/{model_dir_name}"
+            s3_cache_path = f"s3://{s3_bucket}/hf_cache/{model_dir_name}" if s3_bucket else None
+            
+            if s3_cache_path:
+                print(f"🔄 Attempting to restore cache from S3: {s3_cache_path} -> {local_cache_path}", flush=True)
+                subprocess.run(["aws", "s3", "sync", s3_cache_path, local_cache_path, "--no-progress"], check=False)
+            
             try:
-                # Build the native shell execution array
                 cmd = ["hf", "download", base_model_str]
                 
                 # Execute the standalone downloader. It automatically 
@@ -58,6 +68,11 @@ def pre_download_models(pipeline_configs):
                 subprocess.run(cmd, check=True)
                 
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
+                
+                if s3_cache_path:
+                    print(f"📤 Backing up fully downloaded cache to S3: {local_cache_path} -> {s3_cache_path}", flush=True)
+                    subprocess.run(["aws", "s3", "sync", local_cache_path, s3_cache_path, "--no-progress"], check=False)
+                    
                 processed_models.add(base_model_str)
             except subprocess.CalledProcessError as e:
                 print(f"\n❌ CRITICAL: Native 'hf' tool failed to download {base_model_str}!")
@@ -242,6 +257,10 @@ def main():
 
     # Pre-download models in a single process to build out local disk structures smoothly
     pre_download_models(active_pipeline)
+    
+    if os.environ.get("DOWNLOAD_ONLY", "false").lower() == "true":
+        print("\n🏁 DOWNLOAD_ONLY is true. Successfully cached models to local/S3. Exiting before training.")
+        return
     
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"

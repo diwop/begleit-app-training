@@ -63,7 +63,9 @@ else
     echo "Skipping training phase..."
 fi
 
-if [ "${SKIP_EVAL:-false}" != "true" ]; then
+if [ "${DOWNLOAD_ONLY:-false}" = "true" ]; then
+    echo "DOWNLOAD_ONLY is set. Skipping evaluation phase..."
+elif [ "${SKIP_EVAL:-false}" != "true" ]; then
     echo "Starting evaluation phase..."
     bash scripts/eval.sh
 else
