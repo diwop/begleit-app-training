@@ -91,6 +91,44 @@ def _reconstruct_local_symlinks(local_cache_path: str, base_model_str: str):
     except Exception as e:
         print(f"⚠️ Error reconstructing local symlinks: {e}", flush=True)
 
+def _cleanup_cache_temp_files(local_cache_path: str):
+    import shutil
+    print(f"🧹 Cleaning up temporary download files and locks in: {local_cache_path}", flush=True)
+    if not os.path.exists(local_cache_path):
+        return
+        
+    # Delete .locks directory if it exists
+    locks_dir = os.path.join(local_cache_path, ".locks")
+    if os.path.exists(locks_dir):
+        try:
+            shutil.rmtree(locks_dir)
+            print("  Removed .locks directory", flush=True)
+        except Exception as e:
+            print(f"  ⚠️ Error removing .locks directory: {e}", flush=True)
+            
+    # Walk through blobs directory and delete any files with a dot in their name
+    blobs_dir = os.path.join(local_cache_path, "blobs")
+    if os.path.exists(blobs_dir):
+        for file in os.listdir(blobs_dir):
+            file_path = os.path.join(blobs_dir, file)
+            if os.path.isfile(file_path) and "." in file:
+                try:
+                    os.remove(file_path)
+                    print(f"  Removed temp blob file: {file}", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️ Error removing {file}: {e}", flush=True)
+                    
+    # Also clean up any lock files or incomplete files in the root or snapshots folder
+    for root, dirs, files in os.walk(local_cache_path):
+        for file in files:
+            if file.endswith(".lock") or file.endswith(".incomplete"):
+                file_path = os.path.join(root, file)
+                try:
+                    os.remove(file_path)
+                    print(f"  Removed lock/incomplete file: {file}", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️ Error removing {file}: {e}", flush=True)
+
 def pre_download_models(pipeline_configs):
     """
     Sequentially pre-stages base models in a single-process environment.
@@ -131,6 +169,7 @@ def pre_download_models(pipeline_configs):
                 print(f"🔄 Attempting to restore cache from S3: {s3_cache_path} -> {local_cache_path}", flush=True)
                 subprocess.run(["aws", "s3", "sync", s3_cache_path, local_cache_path, "--no-progress"], check=False)
                 _reconstruct_local_symlinks(local_cache_path, base_model_str)
+                _cleanup_cache_temp_files(local_cache_path)
                 _debug_inspect_dir(local_cache_path)
             
             try:
