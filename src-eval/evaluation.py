@@ -274,7 +274,7 @@ def main():
     if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
-    # # Gemma routes through the official model repo with hardware native FP8 execution
+    # Gemma routes through the official model repo with hardware native FP8 execution
     EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))

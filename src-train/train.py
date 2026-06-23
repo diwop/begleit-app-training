@@ -20,6 +20,77 @@ def merge_configs(base_path: str, override_path: str):
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
 
+def _debug_inspect_dir(local_cache_path: str):
+    print(f"\n🔍 [DEBUG] Inspecting directory: {local_cache_path}", flush=True)
+    if os.path.exists(local_cache_path):
+        for root, dirs, files in os.walk(local_cache_path):
+            dirs.sort()
+            files.sort()
+            for file in files:
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, local_cache_path)
+                try:
+                    is_symlink = os.path.islink(full_path)
+                    if is_symlink:
+                        link_target = os.readlink(full_path)
+                        exists = os.path.exists(full_path)
+                        print(f"  [LINK] {rel_path} -> {link_target} (Exists: {exists})", flush=True)
+                    else:
+                        size_gb = os.path.getsize(full_path) / (1024**3)
+                        print(f"  [FILE] {rel_path} ({size_gb:.4f} GB)", flush=True)
+                except Exception as e:
+                    print(f"  [ERROR] {rel_path}: {e}", flush=True)
+            for d in dirs:
+                dir_path = os.path.join(root, d)
+                rel_path = os.path.relpath(dir_path, local_cache_path)
+                try:
+                    is_symlink = os.path.islink(dir_path)
+                    if is_symlink:
+                        link_target = os.readlink(dir_path)
+                        print(f"  [LINK DIR] {rel_path} -> {link_target}", flush=True)
+                except Exception as e:
+                    print(f"  [ERROR DIR] {rel_path}: {e}", flush=True)
+    else:
+        print(f"  ❌ Directory {local_cache_path} does not exist!", flush=True)
+    print("="*60 + "\n", flush=True)
+
+def _reconstruct_local_symlinks(local_cache_path: str, base_model_str: str):
+    print(f"🔗 Reconstructing local symlinks for cache: {local_cache_path}", flush=True)
+    refs_main_path = os.path.join(local_cache_path, "refs", "main")
+    if not os.path.exists(refs_main_path):
+        print("⚠️ refs/main not found, skipping symlink reconstruction", flush=True)
+        return
+        
+    with open(refs_main_path, "r") as f:
+        commit_sha = f.read().strip()
+        
+    snapshots_dir = os.path.join(local_cache_path, "snapshots", commit_sha)
+    os.makedirs(snapshots_dir, exist_ok=True)
+    
+    from huggingface_hub import HfApi
+    try:
+        api = HfApi()
+        info = api.model_info(base_model_str, files_metadata=True)
+        for sibling in info.siblings:
+            filename = sibling.rfilename
+            sha = sibling.lfs.get("sha256") if sibling.lfs else None
+            
+            if sha:
+                symlink_path = os.path.join(snapshots_dir, filename)
+                os.makedirs(os.path.dirname(symlink_path), exist_ok=True)
+                
+                if os.path.exists(symlink_path) or os.path.islink(symlink_path):
+                    os.remove(symlink_path)
+                    
+                depth = len(filename.split("/")) - 1
+                rel_prefix = "../" * (2 + depth)
+                target = f"{rel_prefix}blobs/{sha}"
+                
+                os.symlink(target, symlink_path)
+                print(f"  Created symlink: {filename} -> {target}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error reconstructing local symlinks: {e}", flush=True)
+
 def pre_download_models(pipeline_configs):
     """
     Sequentially pre-stages base models in a single-process environment.
@@ -59,6 +130,8 @@ def pre_download_models(pipeline_configs):
             if s3_cache_path:
                 print(f"🔄 Attempting to restore cache from S3: {s3_cache_path} -> {local_cache_path}", flush=True)
                 subprocess.run(["aws", "s3", "sync", s3_cache_path, local_cache_path, "--no-progress"], check=False)
+                _reconstruct_local_symlinks(local_cache_path, base_model_str)
+                _debug_inspect_dir(local_cache_path)
             
             try:
                 cmd = ["hf", "download", base_model_str]
@@ -68,6 +141,7 @@ def pre_download_models(pipeline_configs):
                 subprocess.run(cmd, check=True)
                 
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
+                _debug_inspect_dir(local_cache_path)
                 
                 if s3_cache_path:
                     print(f"📤 Backing up fully downloaded cache to S3: {local_cache_path} -> {s3_cache_path}", flush=True)
@@ -77,6 +151,7 @@ def pre_download_models(pipeline_configs):
             except subprocess.CalledProcessError as e:
                 print(f"\n❌ CRITICAL: Native 'hf' tool failed to download {base_model_str}!")
                 print(f"Exit Code: {e.returncode}")
+                _debug_inspect_dir(local_cache_path)
                 sys.exit(1)
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
