@@ -9,6 +9,10 @@ import sys
 from omegaconf import OmegaConf
 from huggingface_hub import snapshot_download
 
+# Force Hugging Face to use the persistent volume cache directory to prevent downloading to container root disk
+os.environ["HF_HOME"] = "/app/huggingface_cache"
+os.environ["HF_HUB_CACHE"] = "/app/huggingface_cache/hub"
+
 TRAINING_PIPELINE = [
     "config/train-gemma4.yml",
     "config/train-mistral4small.yml"
