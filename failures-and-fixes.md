@@ -25,6 +25,11 @@
 * **Fix**: Added `liger-kernel` to dependencies in `pyproject.toml` and enabled it in `config/train-gemma4.yml` to optimize activation memory (and completely eliminate logits upcasting allocation). Enabled DeepSpeed CPU activation checkpointing (`deepspeed_cpu_checkpointing: true`) to offload activation checkpoints to CPU RAM. Set `deepspeed_param_persistence_threshold: 0` to force sharding of all parameters (such as MoE expert parameters) across the GPUs. Made these DeepSpeed settings customizable via the launcher.
 * **Update (OOM persistent)**: Even with sharded weights and Liger kernel, the remaining ~18.6 GB of VRAM was too small to host 16K context activations during forward steps. We resolved this by enabling DeepSpeed CPU offloading for parameters and optimizer states (`deepspeed_offload_param: true` and `deepspeed_offload_optimizer: true`), reducing the GPU memory required for weights from 26 GB to almost 0.
 
+### Iteration 5: Hugging Face Cache causing Container Root Disk Full / OOM
+* **Error**: The training script hung or crashed during base model pre-staging because the container root disk (`/`) filled up to 100%.
+* **What didn't work**: The `pre_download_models` script used `subprocess.run` to download models without setting the `HF_HOME` environment variable. This caused Hugging Face to download the massive model weights into the default container cache at `/root/.cache/huggingface/hub`, which resided on the small 50 GB container root disk instead of the large persistent volume mounted at `/app`.
+* **Fix**: Injected `os.environ["HF_HOME"] = "/app/huggingface_cache"` and `os.environ["HF_HUB_CACHE"] = "/app/huggingface_cache/hub"` at the top of `src-train/train.py`. This globally forces the Hugging Face hub (and all underlying `accelerate` subprocesses) to use the correct persistent volume, bypassing the root disk entirely.
+
 
 ## Mistral
 
