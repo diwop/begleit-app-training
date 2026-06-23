@@ -276,7 +276,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         "--num_processes", str(num_gpus),
         "--use_deepspeed",
         "--deepspeed_config_file", runtime_ds_path,
-        "src/train_patched.py",
+        "src-train/train_patched.py",
         temp_yaml_path
     ]
 
@@ -366,9 +366,9 @@ def main():
     # TODO: Activate when evaluation can process adapters
     # Evaluation Layer
     # print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
-    # if os.path.exists("src/evaluation.py"):
+    # if os.path.exists("src-eval/evaluation.py"):
         # try:
-            # subprocess.run(["python", "src/evaluation.py"], check=True)
+            # subprocess.run(["python", "src-eval/evaluation.py"], check=True)
             # print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
         # except subprocess.CalledProcessError as e:
             # print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
