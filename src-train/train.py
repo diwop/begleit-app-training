@@ -353,6 +353,15 @@ def main():
     vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
+    # On 2-GPU instances, PCIe P2P is frequently broken/unsupported on cloud providers (causing deadlocks).
+    # We default to disabling P2P to ensure robust execution unless explicitly overridden.
+    if num_gpus == 2:
+        if "NCCL_P2P_DISABLE" not in os.environ:
+            print("ℹ️ 2-GPU cluster detected. Auto-disabling NCCL P2P to prevent virtualized PCIe deadlocks (NCCL_P2P_DISABLE=1).", flush=True)
+            os.environ["NCCL_P2P_DISABLE"] = "1"
+        if "NCCL_IB_DISABLE" not in os.environ:
+            os.environ["NCCL_IB_DISABLE"] = "1"
+
 
     
     # Filter pipeline based on GPU count constraints:
