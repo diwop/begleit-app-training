@@ -230,6 +230,9 @@ def generate_runtime_deepspeed(
     ds_dict["zero_optimization"]["stage"] = 3
     ds_dict["zero3_init_flag"] = True
     
+    # LoRA optimization: Do not gather full base model weights during saves to prevent massive VRAM OOM spikes on rank 0
+    ds_dict["zero_optimization"]["gather_16bit_weights_on_model_save"] = False
+    
     # Optimizer and parameter offloading configurations
     ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "cpu" if offload_optimizer else "none"}
     ds_dict["zero_optimization"]["offload_param"] = {"device": "cpu" if offload_param else "none"}
