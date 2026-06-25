@@ -5,14 +5,8 @@ cd /runner/repo/
 
 LOG_FILE="/app/evaluation_run.log"
 
-echo "Creating isolated sglang evaluation environment..."
-uv venv --system-site-packages /app/sglang-venv
-export VIRTUAL_ENV="/app/sglang-venv"
-export PATH="/app/sglang-venv/bin:$PATH"
-
 echo "Installing evaluation dependencies..."
-uv pip compile src-eval/pyproject.toml -o src-eval/requirements.txt
-uv pip install -r src-eval/requirements.txt
+uv pip install --system --break-system-packages textstat
 
 echo "Running evaluation script..."
 set +e
@@ -22,7 +16,7 @@ EVAL_EXIT_CODE=${PIPESTATUS[0]}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
     echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
-    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/logs/${TIMESTAMP}_evaluation.log"
+    python -u -c "import boto3; boto3.client('s3').upload_file('$LOG_FILE', '$S3_BUCKET', 'logs/${TIMESTAMP}_evaluation.log')"
 
     if [ $? -eq 0 ]; then
         echo "Logs copied to S3."
