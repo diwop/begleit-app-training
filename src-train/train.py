@@ -15,7 +15,7 @@ os.environ["HF_HUB_CACHE"] = "/app/huggingface_cache/hub"
 
 TRAINING_PIPELINE = [
     "config/train-gemma4.yml",
-    "config/train-mistral4small.yml"
+    # "config/train-mistral4small.yml" Mistral is not feasible on RunPod (OOM at 4x L40S)
 ]
 
 def merge_configs(base_path: str, override_path: str):
@@ -23,115 +23,6 @@ def merge_configs(base_path: str, override_path: str):
     base_cfg = OmegaConf.load(base_path)
     override_cfg = OmegaConf.load(override_path)
     return OmegaConf.merge(base_cfg, override_cfg)
-
-def _debug_inspect_dir(local_cache_path: str):
-    print(f"\n🔍 [DEBUG] Inspecting directory: {local_cache_path}", flush=True)
-    if os.path.exists(local_cache_path):
-        for root, dirs, files in os.walk(local_cache_path):
-            dirs.sort()
-            files.sort()
-            for file in files:
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, local_cache_path)
-                try:
-                    is_symlink = os.path.islink(full_path)
-                    if is_symlink:
-                        link_target = os.readlink(full_path)
-                        exists = os.path.exists(full_path)
-                        print(f"  [LINK] {rel_path} -> {link_target} (Exists: {exists})", flush=True)
-                    else:
-                        size_gb = os.path.getsize(full_path) / (1024**3)
-                        print(f"  [FILE] {rel_path} ({size_gb:.4f} GB)", flush=True)
-                except Exception as e:
-                    print(f"  [ERROR] {rel_path}: {e}", flush=True)
-            for d in dirs:
-                dir_path = os.path.join(root, d)
-                rel_path = os.path.relpath(dir_path, local_cache_path)
-                try:
-                    is_symlink = os.path.islink(dir_path)
-                    if is_symlink:
-                        link_target = os.readlink(dir_path)
-                        print(f"  [LINK DIR] {rel_path} -> {link_target}", flush=True)
-                except Exception as e:
-                    print(f"  [ERROR DIR] {rel_path}: {e}", flush=True)
-    else:
-        print(f"  ❌ Directory {local_cache_path} does not exist!", flush=True)
-    print("="*60 + "\n", flush=True)
-
-def _reconstruct_local_symlinks(local_cache_path: str, base_model_str: str):
-    print(f"🔗 Reconstructing local symlinks for cache: {local_cache_path}", flush=True)
-    refs_main_path = os.path.join(local_cache_path, "refs", "main")
-    if not os.path.exists(refs_main_path):
-        print("⚠️ refs/main not found, skipping symlink reconstruction", flush=True)
-        return
-        
-    with open(refs_main_path, "r") as f:
-        commit_sha = f.read().strip()
-        
-    snapshots_dir = os.path.join(local_cache_path, "snapshots", commit_sha)
-    os.makedirs(snapshots_dir, exist_ok=True)
-    
-    from huggingface_hub import HfApi
-    try:
-        api = HfApi()
-        info = api.model_info(base_model_str, files_metadata=True)
-        for sibling in info.siblings:
-            filename = sibling.rfilename
-            sha = sibling.lfs.get("sha256") if sibling.lfs else None
-            
-            if sha:
-                symlink_path = os.path.join(snapshots_dir, filename)
-                os.makedirs(os.path.dirname(symlink_path), exist_ok=True)
-                
-                if os.path.exists(symlink_path) or os.path.islink(symlink_path):
-                    os.remove(symlink_path)
-                    
-                depth = len(filename.split("/")) - 1
-                rel_prefix = "../" * (2 + depth)
-                target = f"{rel_prefix}blobs/{sha}"
-                
-                os.symlink(target, symlink_path)
-                print(f"  Created symlink: {filename} -> {target}", flush=True)
-    except Exception as e:
-        print(f"⚠️ Error reconstructing local symlinks: {e}", flush=True)
-
-def _cleanup_cache_temp_files(local_cache_path: str):
-    import shutil
-    print(f"🧹 Cleaning up temporary download files and locks in: {local_cache_path}", flush=True)
-    if not os.path.exists(local_cache_path):
-        return
-        
-    # Delete .locks directory if it exists
-    locks_dir = os.path.join(local_cache_path, ".locks")
-    if os.path.exists(locks_dir):
-        try:
-            shutil.rmtree(locks_dir)
-            print("  Removed .locks directory", flush=True)
-        except Exception as e:
-            print(f"  ⚠️ Error removing .locks directory: {e}", flush=True)
-            
-    # Walk through blobs directory and delete any files with a dot in their name
-    blobs_dir = os.path.join(local_cache_path, "blobs")
-    if os.path.exists(blobs_dir):
-        for file in os.listdir(blobs_dir):
-            file_path = os.path.join(blobs_dir, file)
-            if os.path.isfile(file_path) and "." in file:
-                try:
-                    os.remove(file_path)
-                    print(f"  Removed temp blob file: {file}", flush=True)
-                except Exception as e:
-                    print(f"  ⚠️ Error removing {file}: {e}", flush=True)
-                    
-    # Also clean up any lock files or incomplete files in the root or snapshots folder
-    for root, dirs, files in os.walk(local_cache_path):
-        for file in files:
-            if file.endswith(".lock") or file.endswith(".incomplete"):
-                file_path = os.path.join(root, file)
-                try:
-                    os.remove(file_path)
-                    print(f"  Removed lock/incomplete file: {file}", flush=True)
-                except Exception as e:
-                    print(f"  ⚠️ Error removing {file}: {e}", flush=True)
 
 def pre_download_models(pipeline_configs):
     """
@@ -153,7 +44,6 @@ def pre_download_models(pipeline_configs):
     print("="*60, flush=True)
     
     processed_models = set()
-    s3_bucket = os.environ.get("S3_BUCKET", "")
     
     for config_path in pipeline_configs:
         if not os.path.exists(config_path):
@@ -165,17 +55,6 @@ def pre_download_models(pipeline_configs):
         if base_model_str and base_model_str not in processed_models:
             print(f"📦 Invoking native hf engine for: '{base_model_str}'...", flush=True)
             
-            model_dir_name = f"models--{base_model_str.replace('/', '--')}"
-            local_cache_path = f"/app/huggingface_cache/hub/{model_dir_name}"
-            s3_cache_path = f"s3://{s3_bucket}/hf_cache/{model_dir_name}" if s3_bucket else None
-            
-            if s3_cache_path:
-                print(f"🔄 Attempting to restore cache from S3: {s3_cache_path} -> {local_cache_path}", flush=True)
-                subprocess.run(["aws", "s3", "sync", s3_cache_path, local_cache_path, "--no-progress"], check=False)
-                _reconstruct_local_symlinks(local_cache_path, base_model_str)
-                _cleanup_cache_temp_files(local_cache_path)
-                _debug_inspect_dir(local_cache_path)
-            
             try:
                 cmd = ["hf", "download", base_model_str]
                 
@@ -184,17 +63,10 @@ def pre_download_models(pipeline_configs):
                 subprocess.run(cmd, check=True)
                 
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
-                _debug_inspect_dir(local_cache_path)
-                
-                if s3_cache_path:
-                    print(f"📤 Backing up fully downloaded cache to S3: {local_cache_path} -> {s3_cache_path}", flush=True)
-                    subprocess.run(["aws", "s3", "sync", local_cache_path, s3_cache_path, "--no-progress"], check=False)
-                    
                 processed_models.add(base_model_str)
             except subprocess.CalledProcessError as e:
                 print(f"\n❌ CRITICAL: Native 'hf' tool failed to download {base_model_str}!")
                 print(f"Exit Code: {e.returncode}")
-                _debug_inspect_dir(local_cache_path)
                 sys.exit(1)
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
@@ -387,10 +259,6 @@ def main():
 
     # Pre-download models in a single process to build out local disk structures smoothly
     pre_download_models(active_pipeline)
-    
-    if os.environ.get("DOWNLOAD_ONLY", "false").lower() == "true":
-        print("\n🏁 DOWNLOAD_ONLY is true. Successfully cached models to local/S3. Exiting before training.")
-        return
     
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
