@@ -4,12 +4,13 @@ The training pipeline automatically manages and runs all active model configurat
 
 It currently runs:
 1. `config/train-gemma4.yml` (requires GPU count >= 2)
-2. `config/train-mistral4small.yml` (Skipped if < 8 GPUs)
+2. `config/train-mistral4small.yml` (Skipped if < 8 GPUs) **DEACTIVATED FOR NOW***.
 
-After training the pipeline automatically runs evaluation jobs from `src-eval/evaluation.py` with and without reasoning/adapters.
+The training and evaluation phases are split and run on separate containers:
+1. **Training Phase (`MODE=train`)**: Runs on the Axolotl container, compiles datasets, fine-tunes the model, and uploads the trained LoRA adapters to S3.
+2. **Evaluation Phase (`MODE=eval`)**: Runs on the SGLang container, downloads the latest adapters from S3, and executes the evaluation suite.
 
-Use `SKIP_TRAIN=true` to only run the evaluation (with the currently available adapters).
-Use `SKIP_EVAL=true` to only run the training without evaluation.
+By default, the launch script runs in `MODE=eval`.
 
 ## Persistent Caching and Output
 
@@ -37,10 +38,9 @@ The training and evaluation pipeline is optimized for NVIDIA L40S GPUs.
 * For **Gemma 4** training you'll need **2x L40S à 48 GB**. The training won't start with just a single GPU.
 * For **Mistral Small 4** training you'll need **8x L40S à 48 GB**. The training will skip Mistral if less than 8 GPUs are available.
 
-2. **Container Image:** Enter the official Axolotl image. The currently recommended and tested image version is tracked in the `axolotl_image` field at the top of the [README.md](../README.md) file.
-   ```text
-   axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
-   ```
+2. **Container Image:** Enter the appropriate Docker image. The recommended and tested image versions are tracked at the top of the [README.md](../README.md) file:
+   * For training (`MODE=train`), use `axolotl_image` (e.g. `axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0`).
+   * For evaluation (`MODE=eval`), use `sglang_image` (e.g. `lmsysorg/sglang:latest`).
 3. **Docker Command:** Set the RunPod Docker Command to bootstrap the repository:
    ```bash
    bash -c "wget -qO- https://raw.githubusercontent.com/diwop/begleit-app-training/${BRANCH:-main}/scripts/launch.sh | bash"
@@ -54,10 +54,7 @@ The training and evaluation pipeline is optimized for NVIDIA L40S GPUs.
 
 You can pass overrides via Environment Variables in RunPod:
 
-* `BRANCH` to run a specific branch
-* `SKIP_TRAIN=true`/`SKIP_EVAL=true` to toggle pipeline stages
-* `S3_BUCKET` to store logs and results in an S3 bucket (requires `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` to be set as well)
+* `MODE` to toggle pipeline stages (`train` or `eval`)
+* `S3_BUCKET` to store logs, evaluation results, and adapters in an S3 bucket (requires `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` to be set as well)
 
-6. **Volume Mounts:** To ensure your fine-tuned LoRA adapters and Hugging Face model cache are saved permanently, mount a RunPod Network Volume (or a persistent pod volume) to `/app`. This ensures that even if you terminate the container, the downloaded model weights (stored in `/app/huggingface_cache`) and trained adapters (stored in `/app/output`) remain accessible.
-
-7. **Execution:** Once the Pod is booted, the bootstrap command will automatically clone the latest code, sync any new package dependency changes, prepare the data, and execute `launch.sh`. You can monitor the dynamic hardware scaling and the training progress via the RunPod Web Terminal or Container Logs.
+6. **Execution:** Once the Pod is booted, the bootstrap command will automatically clone the latest code, sync any new package dependency changes, prepare the data, and execute `launch.sh`. You can monitor the dynamic hardware scaling and the training progress via the RunPod Web Terminal or Container Logs.
