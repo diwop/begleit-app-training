@@ -3,6 +3,13 @@ set -e
 
 cd /runner/repo/
 
+# Activate Axolotl's pre-built master environment
+export VIRTUAL_ENV="/workspace/axolotl-venv"
+export PATH="/workspace/axolotl-venv/bin:$PATH"
+
+echo "Installing training dependencies into axolotl-venv..."
+uv pip install src-train/
+
 export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"
 

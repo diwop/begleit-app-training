@@ -7,9 +7,6 @@ DEFAULT_REPO="https://github.com/diwop/begleit-app-training.git"
 BRANCH=${BRANCH:-"main"}
 REPO_URL=${REPO_URL:-"$DEFAULT_REPO"}
 
-# 1. PERMANENTLY activate Axolotl's pre-built master environment!
-export VIRTUAL_ENV="/workspace/axolotl-venv"
-export PATH="/workspace/axolotl-venv/bin:$PATH"
 
 # --- 💾 CRITICAL IMAGE-LEVEL STORAGE PROTECTION ---
 export HF_HOME="/app/huggingface_cache"
@@ -36,10 +33,10 @@ mkdir -p /app/tmp
 # Start JupyterLab Sidecar in the background
 echo "Starting JupyterLab..."
 
-# Safely inject Jupyter into the active axolotl-venv utilizing our secure cache paths
+# Safely inject Jupyter into the system environment utilizing our secure cache paths
 if ! command -v jupyter &> /dev/null; then
-    echo "Installing JupyterLab into master runtime..."
-    uv pip install jupyterlab
+    echo "Installing JupyterLab..."
+    uv pip install --system jupyterlab
 fi
 
 # Run JupyterLab Bound cleanly to your custom port parameters
@@ -53,19 +50,12 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 cd /runner/repo
 
-echo "Installing training dependencies into axolotl-venv..."
-uv pip install src-train/
+MODE=${MODE:-"train"} # "train" or "eval"
 
-if [ "${SKIP_TRAIN:-false}" != "true" ]; then
-    echo "Starting training phase..."
-    bash scripts/train.sh
-else
-    echo "Skipping training phase..."
-fi
-
-if [ "${SKIP_EVAL:-false}" != "true" ]; then
+if [ "$MODE" = "eval" ] || [ "$MODE" = "evaluation" ]; then
     echo "Starting evaluation phase..."
     bash scripts/eval.sh
 else
-    echo "Skipping evaluation phase..."
+    echo "Starting training phase..."
+    bash scripts/train.sh
 fi
