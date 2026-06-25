@@ -1,6 +1,6 @@
 ---
 axolotl_image: axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
-sglang_image: lmsysorg/sglang:v0.4.4
+sglang_image: lmsysorg/sglang:v0.5.13.post1
 ---
 # DiWop Begleit-App Training
 
