@@ -389,7 +389,7 @@ def main():
 
     # Output Serialization and S3 Upload
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    filename = f"evaluation_{timestamp}.json"
+    filename = f"evaluation/{timestamp}_evaluation.json"
     bucket_name = os.environ.get("S3_BUCKET")
     json_payload = json.dumps(output_json, ensure_ascii=False, indent=2)
     
