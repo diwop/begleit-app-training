@@ -56,19 +56,21 @@ mkdir -p /app/xdg_cache
 mkdir -p /app/uv_cache
 mkdir -p /app/tmp
 
-# Start JupyterLab Sidecar in the background
-echo "Starting JupyterLab..."
+if [ "${START_JUPYTER:-false}" = "true" ]; then
+    # Start JupyterLab Sidecar in the background
+    echo "Starting JupyterLab..."
 
-# Safely inject Jupyter into the system environment utilizing our secure cache paths
-if ! command -v jupyter &> /dev/null; then
-    echo "Installing JupyterLab..."
-    uv pip install --system jupyterlab
+    # Safely inject Jupyter into the system environment utilizing our secure cache paths
+    if ! command -v jupyter &> /dev/null; then
+        echo "Installing JupyterLab..."
+        uv pip install --system --break-system-packages jupyterlab
+    fi
+
+    # Run JupyterLab Bound cleanly to your custom port parameters
+    jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
+      --IdentityProvider.token="${JUPYTER_PASSWORD:-}" \
+      --ServerApp.password="" &
 fi
-
-# Run JupyterLab Bound cleanly to your custom port parameters
-jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
-  --IdentityProvider.token="${JUPYTER_PASSWORD:-}" \
-  --ServerApp.password="" &
 
 echo "Cloning branch '$BRANCH' from $REPO_URL..."
 rm -rf /runner/repo
