@@ -6,7 +6,7 @@ cd /runner/repo/
 LOG_FILE="/app/evaluation_run.log"
 
 echo "Creating isolated sglang evaluation environment..."
-uv venv /app/sglang-venv
+uv venv --system-site-packages /app/sglang-venv
 export VIRTUAL_ENV="/app/sglang-venv"
 export PATH="/app/sglang-venv/bin:$PATH"
 
