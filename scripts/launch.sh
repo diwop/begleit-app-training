@@ -50,7 +50,7 @@ git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 cd /runner/repo
 
-MODE=${MODE:-"train"} # "train" or "eval"
+MODE=${MODE:-"eval"} # "train" or "eval"
 
 if [ "$MODE" = "eval" ] || [ "$MODE" = "evaluation" ]; then
     echo "Starting evaluation phase..."
