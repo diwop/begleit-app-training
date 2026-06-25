@@ -6,6 +6,32 @@ DEFAULT_REPO="https://github.com/diwop/begleit-app-training.git"
 # Define default environment variables
 BRANCH=${BRANCH:-"main"}
 REPO_URL=${REPO_URL:-"$DEFAULT_REPO"}
+MODE=${MODE:-"eval"} # "train" or "eval"
+
+echo "=== Environment Diagnostics ==="
+if ! command -v nvidia-smi &> /dev/null; then
+    echo "❌ ERROR: GPU environment is missing! nvidia-smi not found."
+    exit 1
+else
+    echo "✅ GPU support detected:"
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+fi
+
+if [ "$MODE" = "train" ]; then
+    if [ ! -d "/workspace/axolotl-venv" ]; then
+        echo "❌ ERROR: /workspace/axolotl-venv not found! You must run training on the Axolotl docker image."
+        exit 1
+    else
+        echo "✅ Correct Axolotl training image detected."
+    fi
+elif [ "$MODE" = "eval" ] || [ "$MODE" = "evaluation" ]; then
+    if [ -d "/workspace/axolotl-venv" ]; then
+        echo "⚠️ WARNING: You are running evaluation mode on the Axolotl training image."
+        echo "It is highly recommended to run evaluation in a dedicated SGLang/PyTorch container to avoid library conflicts."
+    else
+        echo "✅ Separate evaluation container detected."
+    fi
+fi
 
 
 # --- 💾 CRITICAL IMAGE-LEVEL STORAGE PROTECTION ---
@@ -49,8 +75,6 @@ rm -rf /runner/repo
 git clone -b "$BRANCH" "$REPO_URL" /runner/repo
 
 cd /runner/repo
-
-MODE=${MODE:-"eval"} # "train" or "eval"
 
 if [ "$MODE" = "eval" ] || [ "$MODE" = "evaluation" ]; then
     echo "Starting evaluation phase..."
