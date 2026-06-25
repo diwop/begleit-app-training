@@ -41,8 +41,8 @@ jobs:
       - name: Run Pytest
         run: uv run --project src-train pytest tests/
 
-  smoke-test:
-    name: Container Environment Test
+  smoke-test-axolotl:
+    name: Axolotl Container Environment Test
     runs-on: ubuntu-latest
     steps:
       - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
@@ -54,7 +54,7 @@ jobs:
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
       - uses: actions/checkout@v6
-      - name: Run Smoke Test in Docker
+      - name: Run Axolotl Smoke Test in Docker
         run: |
           BASE_IMAGE=$(grep '^axolotl_image:' README.md | awk '{print $2}' | tr -d '\r')
           echo "Booting $BASE_IMAGE..."
@@ -68,7 +68,37 @@ jobs:
             echo 'Compiling utility and data prep blueprints...'
             uv pip install --no-cache src-train/
             
-
             echo 'Executing Version Integrity Smoke Test...'
             python tests/container_smoke_test.py
+            "
+
+  smoke-test-sglang:
+    name: SGLang Container Environment Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
+        run: |
+          echo "Freeing up disk space"
+          docker system prune -af
+          sudo time rm -rf /usr/share/dotnet
+          sudo time rm -rf /usr/local/lib/android
+          sudo time rm -rf /opt/ghc
+          sudo time rm -rf /opt/hostedtoolcache
+      - uses: actions/checkout@v6
+      - name: Run SGLang Smoke Test in Docker
+        run: |
+          BASE_IMAGE=$(grep '^sglang_image:' README.md | awk '{print $2}' | tr -d '\r')
+          echo "Booting $BASE_IMAGE..."
+          
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
+            --user root \
+            --entrypoint bash \
+            $BASE_IMAGE -c "
+            echo 'Installing evaluation dependencies...'
+            pip install --no-cache-dir ./src-eval
+            
+            echo 'Executing SGLang Version Integrity Smoke Test...'
+            python tests/eval_container_smoke_test.py
             "
