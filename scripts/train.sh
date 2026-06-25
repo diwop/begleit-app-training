@@ -3,8 +3,6 @@ set -e
 
 cd /runner/repo/
 
-
-
 export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"
 
@@ -33,12 +31,12 @@ TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
     echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
-    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${TIMESTAMP}_training_run.log"
+    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/logs/${TIMESTAMP}_training.log"
 
     if [ $? -eq 0 ]; then
-        echo "=== S3 Copy Successful! ==="
+        echo "Logs copied to S3."
     else
-        echo "=== WARNING: S3 Copy Failed! ==="
+        echo "WARNING: Could not copy logs to S3."
         sleep 60 # Keep the pod alive for log download
     fi
 fi

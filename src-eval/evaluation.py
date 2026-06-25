@@ -10,9 +10,8 @@ from datetime import datetime, UTC
 from pathlib import Path
 import torch
 import boto3
-# from vllm import LLM, SamplingParams
-# from vllm.lora.request import LoRARequest
-# from vllm.distributed.parallel_state import destroy_model_parallel
+import sglang as sgl
+from transformers import AutoTokenizer
 import textstat
 
 def get_raw_metrics(text: str) -> tuple:
@@ -36,7 +35,7 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
         f"with extensions {extensions}."
     )
 
-def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
+def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
     """
     Initializes the engine, handles conditional FP8 and architecture properties,
     and processes conversations through the safe native parallel llm.chat backend.
@@ -61,103 +60,88 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
             print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
             available_gpus = 2
 
-        pass
-        # llm_kwargs = {
-        #     "model": model_id,
-        #     "quantization": quantization_type,
-        #     "tensor_parallel_size": available_gpus,
-        #     "max_model_len": max_len,
-        #     "trust_remote_code": True,
-        #     "disable_custom_all_reduce": True,
-        #     "enforce_eager": True,
-        #     "gpu_memory_utilization": 0.85
-        # }
-
-        # # Dynamic parameter routing per architecture target
-        # if is_gemma:
-        #     print("💎 Adjusting execution environment parameters for Native Gemma 4 FP8...")
-        #     llm_kwargs["dtype"] = "bfloat16" # Protects weights from FP16 NaN math breakdowns
-            
-        # if is_mistral:
-        #     print("🛑 Disabling vision profiling modalities for text-only pipeline...")
-        #     llm_kwargs["limit_mm_per_prompt"] = {"image": 0}
-        #     print("⚙️  Activating specialized Mistral tokenizer backend...")
-        #     llm_kwargs["tokenizer_mode"] = "mistral"
-
-        # if adapter_id:
-        #     llm_kwargs["enable_lora"] = True
-        #     llm_kwargs["max_loras"] = 1
-            
-        # llm = LLM(**llm_kwargs)
+        # 1. LOAD TOKENIZER AND FORMAT CHAT PROMPTS
+        print("📖 Loading tokenizer and formatting chat prompts...", flush=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         
-        # # Build message lists for parallel execution via the chat engine
-        # batched_messages = []
-        # for prompt_item in evaluation_set:
-        #     batched_messages.append([
-        #         {"role": "system", "content": prompt_item["system"]},
-        #         {"role": "user", "content": prompt_item["templated_user"]}
-        #     ])
-            
-        # # Target Sampling Configurations based on active reasoning paths
-        # if is_gemma:
-        #     sampling_params = SamplingParams(
-        #         temperature=1.0, # Calibrated baseline for Gemma 4 search path exploitation
-        #         top_p=0.95,
-        #         top_k=64,
-        #         max_tokens=4096,
-        #         skip_special_tokens=False # CRITICAL: Retain native hardware channel tokens
-        #     )
-        #     chat_template_kwargs = {"enable_thinking": True}
-        # else:
-        #     sampling_params = SamplingParams(
-        #         temperature=0.3,
-        #         top_p=0.95,
-        #         max_tokens=4096,
-        #         skip_special_tokens=False
-        #     )
-        #     chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral else {}
-            
-        # generate_kwargs = {}
-        # if adapter_id:
-        #     generate_kwargs["lora_request"] = LoRARequest("spike_adapter_layer", 1, adapter_id)
-            
-        # print(f"⚡ Processing {len(batched_messages)} prompts via unified vLLM Chat Engine...", flush=True)
-        # outputs = llm.chat(
-        #     messages=batched_messages, 
-        #     sampling_params=sampling_params, 
-        #     chat_template_kwargs=chat_template_kwargs, 
-        #     **generate_kwargs
-        # )
+        prompts = []
+        for prompt_item in evaluation_set:
+            messages = [
+                {"role": "system", "content": prompt_item["system"]},
+                {"role": "user", "content": prompt_item["templated_user"]}
+            ]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+            prompts.append(formatted_prompt)
+
+        # 2. CONFIGURE SGLANG ENGINE
+        engine_kwargs = {
+            "model_path": model_id,
+            "tp_size": available_gpus,
+            "context_length": max_len,
+            "trust_remote_code": True,
+        }
         
-        # for out in outputs:
-        #     raw_text = out.outputs[0].text.strip()
-        #     reasoning_trace = ""
+        if quantization_type:
+            engine_kwargs["quantization"] = quantization_type
             
-        #     # Extract programmatic reasoning channels if populated by the backend
-        #     if hasattr(out.outputs[0], "reasoning") and out.outputs[0].reasoning:
-        #         reasoning_trace = out.outputs[0].reasoning.strip()
-        #     elif hasattr(out.outputs[0], "reasoning_content") and out.outputs[0].reasoning_content:
-        #         reasoning_trace = out.outputs[0].reasoning_content.strip()
+        if adapter_id:
+            engine_kwargs["enable_lora"] = True
+            engine_kwargs["lora_paths"] = [f"adapter0={adapter_id}"]
+            engine_kwargs["max_loras_per_batch"] = 1
             
-        #     # Universal string extraction regex for plain tags and Gemma hardware tokens
-        #     if not reasoning_trace:
-        #         think_match = re.search(
-        #             r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
-        #             raw_text, 
-        #             re.DOTALL | re.IGNORECASE
-        #         )
-        #         if think_match:
-        #             reasoning_trace = think_match.group(1).strip()
-                    
-        #     # Wipe structural thought text sequences entirely out of final textstat payloads
-        #     raw_text = re.sub(
-        #         r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
-        #         "", 
-        #         raw_text, 
-        #         flags=re.DOTALL | re.IGNORECASE
-        #     ).strip()
+        print(f"⚙️ Initializing SGLang Engine with parameters: {engine_kwargs}", flush=True)
+        llm = sgl.Engine(**engine_kwargs)
+        
+        # 3. SET SAMPLING PARAMS
+        if is_gemma:
+            sampling_params = {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64,
+                "max_new_tokens": 4096,
+                "skip_special_tokens": False
+            }
+        else:
+            sampling_params = {
+                "temperature": 0.3,
+                "top_p": 0.95,
+                "max_new_tokens": 4096,
+                "skip_special_tokens": False
+            }
+            
+        generate_kwargs = {}
+        if adapter_id:
+            generate_kwargs["lora_path"] = "adapter0"
+            
+        print(f"⚡ Processing {len(prompts)} prompts via unified SGLang Engine...", flush=True)
+        outputs = llm.generate(prompt=prompts, sampling_params=sampling_params, **generate_kwargs)
+        
+        for out in outputs:
+            raw_text = out["text"].strip()
+            reasoning_trace = ""
+            
+            # Universal string extraction regex for plain tags and Gemma hardware tokens
+            think_match = re.search(
+                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+                raw_text, 
+                re.DOTALL | re.IGNORECASE
+            )
+            if think_match:
+                reasoning_trace = think_match.group(1).strip()
                 
-        #     generated_responses.append((raw_text, reasoning_trace))
+            # Wipe structural thought text sequences entirely out of final textstat payloads
+            raw_text = re.sub(
+                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+                "", 
+                raw_text, 
+                flags=re.DOTALL | re.IGNORECASE
+            ).strip()
+                
+            generated_responses.append((raw_text, reasoning_trace))
             
     except Exception as e:
         print(f"❌ Execution error encountered on {model_id}: {e}", flush=True)
@@ -165,14 +149,12 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         
     finally:
         print(f"♻️ Evacuating VRAM channels for next model tracking...", flush=True)
-        # try:
-        #     if 'llm' in locals() and hasattr(llm, 'llm_engine') and hasattr(llm.llm_engine, 'engine_core'):
-        #         llm.llm_engine.engine_core.shutdown()
-        # except Exception: pass
-        # try: destroy_model_parallel()
-        # except Exception: pass
-            
-        # if 'llm' in locals(): del llm
+        if 'llm' in locals():
+            try:
+                llm.shutdown()
+            except Exception as e:
+                print(f"⚠️ Error shutting down SGLang Engine: {e}", flush=True)
+            del llm
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -180,7 +162,94 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
         
     return generated_responses
 
+def has_local_adapter(adapter_dir="/app/output/adapter"):
+    if not os.path.exists(adapter_dir):
+        return False
+    for root, dirs, files in os.walk(adapter_dir):
+        if "adapter_config.json" in files:
+            return True
+    return False
+
+def get_newest_run_prefix(bucket_name: str) -> str:
+    s3_client = boto3.client('s3')
+    paginator = s3_client.get_paginator('list_objects_v2')
+    prefixes = []
+    
+    # Try using delimiter first (efficient)
+    for page in paginator.paginate(Bucket=bucket_name, Delimiter='/'):
+        for cp in page.get('CommonPrefixes', []):
+            prefix = cp.get('Prefix', '')
+            base = prefix.strip('/')
+            if '_run' in base:
+                prefixes.append(prefix)
+                
+    if not prefixes:
+        # Fallback: list all objects and parse prefixes
+        for page in paginator.paginate(Bucket=bucket_name):
+            for obj in page.get('Contents', []):
+                key = obj.get('Key', '')
+                parts = key.split('/')
+                if len(parts) > 1:
+                    first_dir = parts[0]
+                    if '_run' in first_dir:
+                        prefixes.append(first_dir + '/')
+                        
+    if not prefixes:
+        raise ValueError(f"No run folders (containing '_run') found in bucket {bucket_name}")
+        
+    return sorted(list(set(prefixes)))[-1]
+
+def download_s3_folder(bucket_name: str, prefix: str, local_dir: str):
+    s3_client = boto3.client('s3')
+    paginator = s3_client.get_paginator('list_objects_v2')
+    print(f"📥 Downloading s3://{bucket_name}/{prefix} to {local_dir}...", flush=True)
+    
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+        for obj in page.get('Contents', []):
+            key = obj.get('Key', '')
+            if key.endswith('/'):
+                continue
+                
+            rel_path = key[len(prefix):]
+            local_file_path = os.path.join(local_dir, rel_path)
+            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+            
+            print(f"  Downloading: {key} -> {local_file_path}", flush=True)
+            s3_client.download_file(bucket_name, key, local_file_path)
+
 def main():
+    # Ensure S3 adapters are downloaded if not present locally
+    adapter_base_dir = "/app/output/adapter"
+    if not has_local_adapter(adapter_base_dir):
+        print("🔍 No local adapters found in /app/output/adapter. Checking S3...", flush=True)
+        bucket_name = os.environ.get("S3_BUCKET", "diwop-leichte-sprache")
+        s3_adapter_run = os.environ.get("S3_ADAPTER_RUN")
+        
+        if s3_adapter_run:
+            print(f"📦 $S3_ADAPTER_RUN specified: {s3_adapter_run}", flush=True)
+            prefix = s3_adapter_run
+        else:
+            print("📦 $S3_ADAPTER_RUN not specified. Listing S3 bucket to find the newest run...", flush=True)
+            try:
+                prefix = get_newest_run_prefix(bucket_name)
+                print(f"✨ Identified newest run: {prefix}", flush=True)
+            except Exception as e:
+                print(f"❌ Error identifying newest run: {e}", flush=True)
+                prefix = None
+                
+        if prefix:
+            if not prefix.endswith("/"):
+                prefix += "/"
+            try:
+                download_s3_folder(bucket_name, prefix, adapter_base_dir)
+                print("✅ S3 download completed successfully!", flush=True)
+            except Exception as e:
+                print(f"❌ Error downloading adapter from S3: {e}", flush=True)
+        else:
+            print("⚠️ Skipping S3 download as no run could be identified.", flush=True)
+    else:
+        print("✅ Local adapter already present in /app/output/adapter. Skipping S3 download.", flush=True)
+
     print("📋 Validating structural configurations...", flush=True)
     if not os.path.exists("data/system-prompt.md") or not os.path.exists("data/prompt-template.md"):
         raise FileNotFoundError("❌ Pipeline Failure: Configuration blueprint files are missing.")
@@ -267,19 +336,18 @@ def main():
     gemma_adapter = "/app/output/adapter/gemma4"
     if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         gemma_adapter = "/app/output/adapter/train-gemma4"
-
     EVALUATION_PIPELINE = []
     # Mistral stays on compressed-tensors AWQ layout
-    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
+    # EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
+    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
-    # # Gemma routes through the official model repo with hardware native FP8 execution
-    EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
+    # Gemma routes through the official model repo with hardware native FP8 execution
+    # EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
 
-    EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
+    # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
     output_json = {
         "system": global_system_prompt,
@@ -305,7 +373,7 @@ def main():
         if adapter_id: display_name += f" ({adapter_id})"
         output_json["models"].append(display_name)
         
-        responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
+        responses = run_evaluation(model_id, quant_type, max_len, adapter_id, evaluation_set)
         
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)

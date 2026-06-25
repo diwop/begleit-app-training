@@ -9,9 +9,13 @@ import sys
 from omegaconf import OmegaConf
 from huggingface_hub import snapshot_download
 
+# Force Hugging Face to use the persistent volume cache directory to prevent downloading to container root disk
+os.environ["HF_HOME"] = "/app/huggingface_cache"
+os.environ["HF_HUB_CACHE"] = "/app/huggingface_cache/hub"
+
 TRAINING_PIPELINE = [
     "config/train-gemma4.yml",
-    "config/train-mistral4small.yml"
+    # "config/train-mistral4small.yml" Mistral is not feasible on RunPod (OOM at 4x L40S)
 ]
 
 def merge_configs(base_path: str, override_path: str):
@@ -40,6 +44,7 @@ def pre_download_models(pipeline_configs):
     print("="*60, flush=True)
     
     processed_models = set()
+    
     for config_path in pipeline_configs:
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"❌ Configuration matrix error: Target file missing '{config_path}'")
@@ -49,8 +54,8 @@ def pre_download_models(pipeline_configs):
         
         if base_model_str and base_model_str not in processed_models:
             print(f"📦 Invoking native hf engine for: '{base_model_str}'...", flush=True)
+            
             try:
-                # Build the native shell execution array
                 cmd = ["hf", "download", base_model_str]
                 
                 # Execute the standalone downloader. It automatically 
@@ -100,6 +105,9 @@ def generate_runtime_deepspeed(
     # Enforce strict Stage 3 parameter sharding across distributed nodes
     ds_dict["zero_optimization"]["stage"] = 3
     ds_dict["zero3_init_flag"] = True
+    
+    # LoRA optimization: Do not gather full base model weights during saves to prevent massive VRAM OOM spikes on rank 0
+    ds_dict["zero_optimization"]["gather_16bit_weights_on_model_save"] = False
     
     # Optimizer and parameter offloading configurations
     ds_dict["zero_optimization"]["offload_optimizer"] = {"device": "cpu" if offload_optimizer else "none"}
@@ -186,7 +194,7 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         "--num_processes", str(num_gpus),
         "--use_deepspeed",
         "--deepspeed_config_file", runtime_ds_path,
-        "src/train_patched.py",
+        "src-train/train_patched.py",
         temp_yaml_path
     ]
 
@@ -223,6 +231,15 @@ def main():
     num_gpus = torch.cuda.device_count()
     vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
+
+    # On 2-GPU instances, PCIe P2P is frequently broken/unsupported on cloud providers (causing deadlocks).
+    # We default to disabling P2P to ensure robust execution unless explicitly overridden.
+    if num_gpus == 2:
+        if "NCCL_P2P_DISABLE" not in os.environ:
+            print("ℹ️ 2-GPU cluster detected. Auto-disabling NCCL P2P to prevent virtualized PCIe deadlocks (NCCL_P2P_DISABLE=1).", flush=True)
+            os.environ["NCCL_P2P_DISABLE"] = "1"
+        if "NCCL_IB_DISABLE" not in os.environ:
+            os.environ["NCCL_IB_DISABLE"] = "1"
 
 
     
@@ -272,9 +289,9 @@ def main():
     # TODO: Activate when evaluation can process adapters
     # Evaluation Layer
     # print("\n" + "="*60 + "\n🎬 LAUNCHING POST-TRAINING METRICS EVALUATION PIPELINE\n" + "="*60, flush=True)
-    # if os.path.exists("src/evaluation.py"):
+    # if os.path.exists("src-eval/evaluation.py"):
         # try:
-            # subprocess.run(["python", "src/evaluation.py"], check=True)
+            # subprocess.run(["python", "src-eval/evaluation.py"], check=True)
             # print("\n🎉 [Success] Post-training validation and evaluation pipeline finished!")
         # except subprocess.CalledProcessError as e:
             # print(f"\n❌ [ERROR] Evaluation phase terminated with non-zero exit code {e.returncode}")
