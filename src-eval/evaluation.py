@@ -407,16 +407,5 @@ def main():
         with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
         print(f"💾 Written to local file system: {filename}")
 
-# def apply_vllm_mla_hotfix():
-#     """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
-#     target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
-#     if os.path.exists(target_file):
-#         with open(target_file, "r", encoding="utf-8") as f: code = f.read()
-#         broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
-#         fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
-#         if broken_string in code:
-#             with open(target_file, "w", encoding="utf-8") as f: f.write(code.replace(broken_string, fixed_string))
-
 if __name__ == "__main__":
-    # apply_vllm_mla_hotfix()
     main()
