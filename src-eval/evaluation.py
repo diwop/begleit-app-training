@@ -343,9 +343,9 @@ def main():
     #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
 
     # Gemma routes through the official model repo with hardware native FP8 execution
-    # EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
+    # EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, None))
     if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
+        EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, gemma_adapter))
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
