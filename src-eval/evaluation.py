@@ -394,6 +394,31 @@ def patch_sglang_clippable_linear():
                     print("✅ Successfully patched layers.py on disk (alternative format).", flush=True)
                 else:
                     print("⚠️ Could not locate get_lora_layer target string in layers.py.", flush=True)
+
+        # Patch SGLang's lora_manager.py to skip vision layers
+        lora_dir = os.path.dirname(target_path)
+        manager_path = os.path.join(lora_dir, "lora_manager.py")
+        if os.path.exists(manager_path):
+            print(f"🛠️ Patching SGLang lora_manager.py on disk at {manager_path}...", flush=True)
+            with open(manager_path, "r", encoding="utf-8") as f:
+                manager_content = f.read()
+                
+            manager_target = "        for module_name, module in self.base_model.named_modules():"
+            manager_replacement = (
+                "        for module_name, module in self.base_model.named_modules():\n"
+                "            if \"vision\" in module_name or \"audio\" in module_name:\n"
+                "                continue"
+            )
+            
+            if "if \"vision\" in module_name or \"audio\" in module_name:" in manager_content:
+                print("✅ lora_manager.py on disk is already patched.", flush=True)
+            elif manager_target in manager_content:
+                manager_content = manager_content.replace(manager_target, manager_replacement)
+                with open(manager_path, "w", encoding="utf-8") as f:
+                    f.write(manager_content)
+                print("✅ Successfully patched lora_manager.py on disk.", flush=True)
+            else:
+                print("⚠️ Could not locate named_modules target string in lora_manager.py.", flush=True)
         
         # Apply in-memory monkeypatch as well
         orig_get_lora_layer = lora_layers.get_lora_layer

@@ -123,3 +123,17 @@
 * **Error**: The model produces garbled or repetitive text outputs after about 100 tokens of generation.
 * **What didn't work**: Default SGLang CUDA Graph capture/replay execution. The CUDA Graph capture of parallel MoE LoRA layers suffers from numerical drift and scaling errors, corrupting the generation output in eager-mode execution.
 * **Fix**: Disabled CUDA graphs (`disable_cuda_graph=True`) when initializing the SGLang Engine for Gemma models.
+
+### Iteration 4: SGLang Clippable Linear LoRA Wrapper Mismatch and Vision Tower Shape Mismatch
+* **Error**: 
+  - `Exception: No corresponding LoRA layer supported for <class 'sglang.srt.layers.clippable_linear.ClippableRowParallelLinear'>.`
+  - `ValueError: LoRA B output dim 4224 does not match base partition prefix dim 8608 for 2 slices.`
+  - `AttributeError: 'CompressedTensorsW8A8Fp8MoE' object has no attribute 'get_triton_quant_info'`
+* **What didn't work**: 
+  - SGLang does not natively support wrapping clippable linear wrapper layers (`ClippableRowParallelLinear`, `ClippableColumnParallelLinear`, etc.) with LoRA layers.
+  - SGLang's `lora_manager.py` loops over all model named modules. Since Gemma 4 is a multimodal model, it contains both a language model and a vision tower. SGLang attempted to wrap the vision tower's `gate_proj`, `up_proj` etc. with LoRA layers, resulting in shape/dimension mismatches (LoRA B output dimension 4224 did not match the vision projection output partition dimension of 8608).
+  - Triton MoE LoRA initialization calls `get_triton_quant_info` on the quantization scheme, but the nightly SGLang `CompressedTensorsW8A8Fp8MoE` scheme lacked this method.
+* **Fix**: Added dynamic hot-patches in `src-eval/evaluation.py`:
+  - **get_lora_layer patch**: Unwraps clippable layers to their standard parallel linear layers (e.g. `layer.linear`) so SGLang can wrap them.
+  - **lora_manager patch**: Skip named modules containing `"vision"` or `"audio"` in `lora_manager.py` to prevent wrapping vision tower/multimodal projections. Also filter out `"vision"` modules from the adapter's `target_modules` during preprocessing.
+  - **CompressedTensorsW8A8Fp8MoE patch**: Implement `get_triton_quant_info` returning `TritonMoeQuantInfo` with `use_fp8_w8a8=True`.
