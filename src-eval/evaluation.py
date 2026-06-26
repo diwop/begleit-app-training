@@ -334,6 +334,7 @@ def patch_sglang_clippable_linear():
     """
     Patches SGLang's layers.py file on disk and in memory to support
     wrapping ClippableRowParallelLinear and other clippable wrappers with LoRA.
+    Also patches CompressedTensorsW8A8Fp8MoE to implement get_triton_quant_info.
     """
     try:
         import sglang.srt.lora.layers as lora_layers
@@ -417,6 +418,174 @@ def patch_sglang_clippable_linear():
             
     except Exception as e:
         print(f"⚠️ Error while patching clippable linear layers: {e}", flush=True)
+
+    # Patch CompressedTensorsW8A8Fp8MoE to support get_triton_quant_info
+    try:
+        import sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8_moe as scheme_module
+        scheme_path = scheme_module.__file__
+        if scheme_path.endswith(".pyc"):
+            scheme_path = scheme_path[:-1]
+
+        if os.path.exists(scheme_path):
+            print(f"🛠️ Patching SGLang scheme on disk at {scheme_path}...", flush=True)
+            with open(scheme_path, "r", encoding="utf-8") as f:
+                scheme_content = f.read()
+
+            target_str = (
+                "        if (\n"
+                "            moe_runner_backend.is_aiter()\n"
+                "            or moe_runner_backend.is_triton()\n"
+                "            or moe_runner_backend.is_flashinfer_trtllm()\n"
+                "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
+                "        ):\n"
+                "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
+                "        else:\n"
+                "            # TODO(cwan): refactor other backends\n"
+                "            pass\n\n"
+                "    def apply_weights("
+            )
+            
+            replacement = (
+                "        if (\n"
+                "            moe_runner_backend.is_aiter()\n"
+                "            or moe_runner_backend.is_triton()\n"
+                "            or moe_runner_backend.is_flashinfer_trtllm()\n"
+                "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
+                "        ):\n"
+                "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
+                "        else:\n"
+                "            # TODO(cwan): refactor other backends\n"
+                "            pass\n\n"
+                "    def get_triton_quant_info(self, layer):\n"
+                "        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo\n"
+                "        if self.weight_quant.strategy == QuantizationStrategy.BLOCK:\n"
+                "            return TritonMoeQuantInfo(\n"
+                "                w13_weight=layer.w13_weight,\n"
+                "                w2_weight=layer.w2_weight,\n"
+                "                use_fp8_w8a8=True,\n"
+                "                w13_scale=layer.w13_weight_scale,\n"
+                "                w2_scale=layer.w2_weight_scale,\n"
+                "                a13_scale=layer.w13_input_scale,\n"
+                "                a2_scale=layer.w2_input_scale,\n"
+                "                block_shape=self.weight_block_size,\n"
+                "            )\n"
+                "        else:\n"
+                "            return TritonMoeQuantInfo(\n"
+                "                w13_weight=layer.w13_weight,\n"
+                "                w2_weight=layer.w2_weight,\n"
+                "                use_fp8_w8a8=True,\n"
+                "                per_channel_quant=self.weight_quant.strategy == QuantizationStrategy.CHANNEL,\n"
+                "                w13_scale=layer.w13_weight_scale,\n"
+                "                w2_scale=layer.w2_weight_scale,\n"
+                "                a13_scale=layer.w13_input_scale,\n"
+                "                a2_scale=layer.w2_input_scale,\n"
+                "            )\n\n"
+                "    def apply_weights("
+            )
+
+            if "def get_triton_quant_info" in scheme_content:
+                print("✅ scheme on disk is already patched.", flush=True)
+            elif target_str in scheme_content:
+                scheme_content = scheme_content.replace(target_str, replacement)
+                with open(scheme_path, "w", encoding="utf-8") as f:
+                    f.write(scheme_content)
+                print("✅ Successfully patched scheme on disk.", flush=True)
+            else:
+                # SGLang formatting fallback
+                target_str_alt = (
+                    "        if (\n"
+                    "            moe_runner_backend.is_aiter()\n"
+                    "            or moe_runner_backend.is_triton()\n"
+                    "            or moe_runner_backend.is_flashinfer_trtllm()\n"
+                    "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
+                    "        ):\n"
+                    "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
+                    "        else:\n"
+                    "            # TODO(cwan): refactor other backends\n"
+                    "            pass\n"
+                    "    def apply_weights("
+                )
+                if target_str_alt in scheme_content:
+                    replacement_alt = (
+                        "        if (\n"
+                        "            moe_runner_backend.is_aiter()\n"
+                        "            or moe_runner_backend.is_triton()\n"
+                        "            or moe_runner_backend.is_flashinfer_trtllm()\n"
+                        "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
+                        "        ):\n"
+                        "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
+                        "        else:\n"
+                        "            # TODO(cwan): refactor other backends\n"
+                        "            pass\n"
+                        "    def get_triton_quant_info(self, layer):\n"
+                        "        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo\n"
+                        "        if self.weight_quant.strategy == QuantizationStrategy.BLOCK:\n"
+                        "            return TritonMoeQuantInfo(\n"
+                        "                w13_weight=layer.w13_weight,\n"
+                        "                w2_weight=layer.w2_weight,\n"
+                        "                use_fp8_w8a8=True,\n"
+                        "                w13_scale=layer.w13_weight_scale,\n"
+                        "                w2_scale=layer.w2_weight_scale,\n"
+                        "                a13_scale=layer.w13_input_scale,\n"
+                        "                a2_scale=layer.w2_input_scale,\n"
+                        "                block_shape=self.weight_block_size,\n"
+                        "            )\n"
+                        "        else:\n"
+                        "            return TritonMoeQuantInfo(\n"
+                        "                w13_weight=layer.w13_weight,\n"
+                        "                w2_weight=layer.w2_weight,\n"
+                        "                use_fp8_w8a8=True,\n"
+                        "                per_channel_quant=self.weight_quant.strategy == QuantizationStrategy.CHANNEL,\n"
+                        "                w13_scale=layer.w13_weight_scale,\n"
+                        "                w2_scale=layer.w2_weight_scale,\n"
+                        "                a13_scale=layer.w13_input_scale,\n"
+                        "                a2_scale=layer.w2_input_scale,\n"
+                        "            )\n"
+                        "    def apply_weights("
+                    )
+                    scheme_content = scheme_content.replace(target_str_alt, replacement_alt)
+                    with open(scheme_path, "w", encoding="utf-8") as f:
+                        f.write(scheme_content)
+                    print("✅ Successfully patched scheme on disk (alternative format).", flush=True)
+                else:
+                    print("⚠️ Could not locate create_moe_runner target string in scheme.py.", flush=True)
+
+        # Apply in-memory monkeypatch
+        try:
+            from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+            from sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_scheme import QuantizationStrategy
+            
+            def get_triton_quant_info(self, layer):
+                if self.weight_quant.strategy == QuantizationStrategy.BLOCK:
+                    return TritonMoeQuantInfo(
+                        w13_weight=layer.w13_weight,
+                        w2_weight=layer.w2_weight,
+                        use_fp8_w8a8=True,
+                        w13_scale=layer.w13_weight_scale,
+                        w2_scale=layer.w2_weight_scale,
+                        a13_scale=layer.w13_input_scale,
+                        a2_scale=layer.w2_input_scale,
+                        block_shape=self.weight_block_size,
+                    )
+                else:
+                    return TritonMoeQuantInfo(
+                        w13_weight=layer.w13_weight,
+                        w2_weight=layer.w2_weight,
+                        use_fp8_w8a8=True,
+                        per_channel_quant=self.weight_quant.strategy
+                        == QuantizationStrategy.CHANNEL,
+                        w13_scale=layer.w13_weight_scale,
+                        w2_scale=layer.w2_weight_scale,
+                        a13_scale=layer.w13_input_scale,
+                        a2_scale=layer.w2_input_scale,
+                    )
+            scheme_module.CompressedTensorsW8A8Fp8MoE.get_triton_quant_info = get_triton_quant_info
+            print("✅ In-memory monkeypatch applied to CompressedTensorsW8A8Fp8MoE.get_triton_quant_info.", flush=True)
+        except Exception as e:
+            print(f"⚠️ Could not apply in-memory patch to CompressedTensorsW8A8Fp8MoE: {e}", flush=True)
+
+    except Exception as e:
+        print(f"⚠️ Error while patching SGLang scheme: {e}", flush=True)
 
 def main():
     patch_sglang_clippable_linear()
