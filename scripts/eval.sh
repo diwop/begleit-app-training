@@ -16,10 +16,11 @@ EVAL_EXIT_CODE=${PIPESTATUS[0]}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
     echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
-    python -u -c "import boto3; boto3.client('s3').upload_file('$LOG_FILE', '$S3_BUCKET', 'logs/${TIMESTAMP}_evaluation.log')"
+    FILENAME="logs/${TIMESTAMP}_evaluation.log"
+    python -u -c "import boto3; boto3.client('s3').upload_file('$LOG_FILE', '$S3_BUCKET', '$FILENAME')"
 
     if [ $? -eq 0 ]; then
-        echo "Logs copied to S3."
+        echo "Logs copied to S3 as $FILENAME."
     else
         echo "WARNING: Could not copy logs to S3."
         sleep 60

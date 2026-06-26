@@ -1,6 +1,4 @@
 # --- src/evaluation.py ---
-from transformers.models.big_bird import modeling_big_bird
-from asyncio import coroutines
 import os
 import re
 import gc
@@ -93,6 +91,15 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
             engine_kwargs["lora_paths"] = [f"adapter0={adapter_id}"]
             engine_kwargs["max_loras_per_batch"] = 1
             
+        # Gemma-specific backend overrides to bypass FlashInfer heterogeneous dimension crash
+        # and CUDA graph numerical drift/garbage output bugs.
+        if is_gemma:
+            print("🔧 Applying Gemma-specific engine overrides (Triton backends, disabled CUDA graph)", flush=True)
+            engine_kwargs["attention_backend"] = "triton"
+            engine_kwargs["moe_runner_backend"] = "triton"
+            engine_kwargs["disable_cuda_graph"] = True
+            engine_kwargs["mem_fraction_static"] = 0.85
+
         print(f"⚙️ Initializing SGLang Engine with parameters: {engine_kwargs}", flush=True)
         llm = sgl.Engine(**engine_kwargs)
         
@@ -169,6 +176,106 @@ def has_local_adapter(adapter_dir="/app/output/adapter"):
         if "adapter_config.json" in files:
             return True
     return False
+
+def preprocess_adapter(adapter_dir: str) -> str:
+    """
+    Preprocesses Gemma 4 PEFT adapter by removing multimodal prefixes from
+    adapter_config.json and rewriting keys in adapter_model.safetensors or bin.
+    Saves the patched files in an adjacent folder with suffix '-patched'.
+    """
+    if not adapter_dir:
+        return adapter_dir
+        
+    adapter_path = Path(adapter_dir).resolve()
+    if not adapter_path.exists():
+        return adapter_dir
+        
+    config_file = adapter_path / "adapter_config.json"
+    if not config_file.exists():
+        return adapter_dir
+
+    patched_dir = adapter_path.parent / f"{adapter_path.name}-patched"
+    patched_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Update adapter_config.json to clean target_modules
+    print(f"🔧 Preprocessing adapter config in {config_file}...", flush=True)
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+        
+    target_modules = config.get("target_modules", [])
+    if isinstance(target_modules, list):
+        new_target_modules = []
+        for tm in target_modules:
+            if isinstance(tm, str):
+                cleaned = tm.replace("base_model.model.language_model.model.", "base_model.model.")
+                cleaned = cleaned.replace("language_model.model.", "model.")
+                cleaned = cleaned.replace("language_model.", "model.")
+                new_target_modules.append(cleaned)
+            else:
+                new_target_modules.append(tm)
+        config["target_modules"] = new_target_modules
+    
+    # Write updated config to patched dir
+    patched_config_file = patched_dir / "adapter_config.json"
+    with open(patched_config_file, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+        
+    # 2. Update weight keys in safetensors or bin files
+    safetensors_file = adapter_path / "adapter_model.safetensors"
+    patched_safetensors_file = patched_dir / "adapter_model.safetensors"
+    
+    if safetensors_file.exists():
+        print(f"🔧 Preprocessing adapter safetensors in {safetensors_file}...", flush=True)
+        try:
+            from safetensors.torch import load_file, save_file
+            
+            tensors = load_file(str(safetensors_file))
+            new_tensors = {}
+            for key, tensor in tensors.items():
+                new_key = key
+                if "language_model.model.layers." in new_key:
+                    new_key = new_key.replace("language_model.model.layers.", "model.layers.")
+                elif "language_model.layers." in new_key:
+                    new_key = new_key.replace("language_model.layers.", "model.layers.")
+                new_tensors[new_key] = tensor
+                
+            save_file(new_tensors, str(patched_safetensors_file), metadata=config)
+            print(f"✅ Successfully saved patched safetensors to {patched_safetensors_file}", flush=True)
+        except Exception as e:
+            print(f"❌ Error patching safetensors: {e}. Copying original file as fallback...", flush=True)
+            import shutil
+            shutil.copy2(safetensors_file, patched_safetensors_file)
+    else:
+        # Check fallback to PyTorch weight dictionary format (.bin)
+        bin_file = adapter_path / "adapter_model.bin"
+        patched_bin_file = patched_dir / "adapter_model.bin"
+        if bin_file.exists():
+            print(f"🔧 Preprocessing adapter bin in {bin_file}...", flush=True)
+            try:
+                import torch
+                state_dict = torch.load(str(bin_file), map_location="cpu")
+                new_state_dict = {}
+                for key, tensor in state_dict.items():
+                    new_key = key
+                    if "language_model.model.layers." in new_key:
+                        new_key = new_key.replace("language_model.model.layers.", "model.layers.")
+                    elif "language_model.layers." in new_key:
+                        new_key = new_key.replace("language_model.layers.", "model.layers.")
+                    new_state_dict[new_key] = tensor
+                torch.save(new_state_dict, str(patched_bin_file))
+                print(f"✅ Successfully saved patched bin to {patched_bin_file}", flush=True)
+            except Exception as e:
+                print(f"❌ Error patching bin file: {e}. Copying original file as fallback...", flush=True)
+                import shutil
+                shutil.copy2(bin_file, patched_bin_file)
+                
+    # Copy other accessory files (e.g. README.md, tokenizer configuration, etc.)
+    for item in adapter_path.iterdir():
+        if item.is_file() and item.name not in ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"]:
+            import shutil
+            shutil.copy2(item, patched_dir / item.name)
+            
+    return str(patched_dir)
 
 def get_newest_run_prefix(bucket_name: str) -> str:
     s3_client = boto3.client('s3')
@@ -373,7 +480,12 @@ def main():
         if adapter_id: display_name += f" ({adapter_id})"
         output_json["models"].append(display_name)
         
-        responses = run_evaluation(model_id, quant_type, max_len, adapter_id, evaluation_set)
+        active_adapter_id = adapter_id
+        if adapter_id and "gemma" in model_id.lower():
+            print(f"⚙️ Intercepted Gemma model with active adapter. Preprocessing: {adapter_id}", flush=True)
+            active_adapter_id = preprocess_adapter(adapter_id)
+            
+        responses = run_evaluation(model_id, quant_type, max_len, active_adapter_id, evaluation_set)
         
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)

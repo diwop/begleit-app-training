@@ -104,12 +104,22 @@
 
 # Evaluating
 
-...
+## Gemma 4
 
-## 
+### Iteration 1: SGLang PEFT-to-SGLang Key Mismatch (Multimodal path nesting)
+* **Error**: Weight-loading `RuntimeError` during SGLang server startup indicating mismatch between base model keys and adapter keys.
+* **What didn't work**: Direct loading of Gemma 4 adapters trained with Axolotl PEFT. Gemma 4 is structured as a multimodal wrapper (`Gemma4ForCausalLM` -> `model` -> `language_model` -> `model` -> `layers`), resulting in nested adapter keys containing `language_model.model.layers.` or `language_model.layers.` prefixes. SGLang's regex parser fails to resolve these deep paths.
+* **Fix**: Added a programmatic preprocessing function `preprocess_adapter` inside `src-eval/evaluation.py` that runs before launching SGLang. It:
+  - Updates `target_modules` in `adapter_config.json` to strip/map `language_model` prefixes.
+  - Rewrites all keys in `adapter_model.safetensors` (or fallback `adapter_model.bin`) mapping `language_model.model.layers.` and `language_model.layers.` directly to `model.layers.`.
+  - Saves the cleaned configuration and weight files to an adjacent patched directory (e.g. `gemma4-patched`), which is then served by SGLang.
 
-...
+### Iteration 2: SGLang FlashInfer Fallback Crash on Heterogeneous Head Dimensions
+* **Error**: SGLang engine crashes or throws an validation error on the first query with FlashInfer.
+* **What didn't work**: SGLang's default FlashInfer attention backend. Gemma 4 has hybrid attention layers featuring heterogeneous head dimensions (local SWA at 256, global full-context at 512). This mismatch causes FlashInfer to crash during runtime inference.
+* **Fix**: Forced the Triton attention backend (`attention_backend="triton"` and `moe_runner_backend="triton"`) when initializing the SGLang Engine for Gemma models.
 
-## 
-
-...
+### Iteration 3: Gemma 4 MoE LoRA CUDA Graph Garbage Output
+* **Error**: The model produces garbled or repetitive text outputs after about 100 tokens of generation.
+* **What didn't work**: Default SGLang CUDA Graph capture/replay execution. The CUDA Graph capture of parallel MoE LoRA layers suffers from numerical drift and scaling errors, corrupting the generation output in eager-mode execution.
+* **Fix**: Disabled CUDA graphs (`disable_cuda_graph=True`) when initializing the SGLang Engine for Gemma models.
