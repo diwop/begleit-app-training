@@ -98,7 +98,7 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
             engine_kwargs["attention_backend"] = "triton"
             engine_kwargs["moe_runner_backend"] = "triton"
             engine_kwargs["disable_cuda_graph"] = True
-            engine_kwargs["mem_fraction_static"] = 0.85
+            engine_kwargs["mem_fraction_static"] = 0.70
 
         print(f"⚙️ Initializing SGLang Engine with parameters: {engine_kwargs}", flush=True)
         llm = sgl.Engine(**engine_kwargs)
