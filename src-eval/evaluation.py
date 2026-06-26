@@ -207,6 +207,9 @@ def preprocess_adapter(adapter_dir: str) -> str:
         new_target_modules = []
         for tm in target_modules:
             if isinstance(tm, str):
+                if "vision" in tm:
+                    print(f"✂️ Filtering out vision module from target_modules: {tm}", flush=True)
+                    continue
                 cleaned = tm.replace("base_model.model.language_model.model.", "base_model.model.")
                 cleaned = cleaned.replace("language_model.model.", "model.")
                 cleaned = cleaned.replace("language_model.", "model.")
@@ -553,10 +556,10 @@ def patch_sglang_clippable_linear():
         # Apply in-memory monkeypatch
         try:
             from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
-            from sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_scheme import QuantizationStrategy
             
             def get_triton_quant_info(self, layer):
-                if self.weight_quant.strategy == QuantizationStrategy.BLOCK:
+                strategy_name = getattr(self.weight_quant.strategy, "name", str(self.weight_quant.strategy))
+                if strategy_name == "BLOCK":
                     return TritonMoeQuantInfo(
                         w13_weight=layer.w13_weight,
                         w2_weight=layer.w2_weight,
@@ -572,8 +575,7 @@ def patch_sglang_clippable_linear():
                         w13_weight=layer.w13_weight,
                         w2_weight=layer.w2_weight,
                         use_fp8_w8a8=True,
-                        per_channel_quant=self.weight_quant.strategy
-                        == QuantizationStrategy.CHANNEL,
+                        per_channel_quant=strategy_name == "CHANNEL",
                         w13_scale=layer.w13_weight_scale,
                         w2_scale=layer.w2_weight_scale,
                         a13_scale=layer.w13_input_scale,
