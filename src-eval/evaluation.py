@@ -330,7 +330,96 @@ def download_s3_folder(bucket_name: str, prefix: str, local_dir: str):
             print(f"  Downloading: {key} -> {local_file_path}", flush=True)
             s3_client.download_file(bucket_name, key, local_file_path)
 
+def patch_sglang_clippable_linear():
+    """
+    Patches SGLang's layers.py file on disk and in memory to support
+    wrapping ClippableRowParallelLinear and other clippable wrappers with LoRA.
+    """
+    try:
+        import sglang.srt.lora.layers as lora_layers
+        target_path = lora_layers.__file__
+        if target_path.endswith(".pyc"):
+            target_path = target_path[:-1]
+            
+        if os.path.exists(target_path):
+            print(f"🛠️ Patching SGLang layers.py on disk at {target_path}...", flush=True)
+            with open(target_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                
+            target_str = "def get_lora_layer(\n    layer: nn.Module, lora_backend: BaseLoRABackend\n) -> BaseLayerWithLoRA:\n    supported_layer_types = {"
+            replacement = (
+                "def get_lora_layer(\n"
+                "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
+                ") -> BaseLayerWithLoRA:\n"
+                "    # Support clippable linear wrapper layers by unwrapping them to self.linear\n"
+                "    layer_class_name = layer.__class__.__name__\n"
+                "    if layer_class_name.startswith(\"Clippable\") and hasattr(layer, \"linear\"):\n"
+                "        return get_lora_layer(layer.linear, lora_backend)\n\n"
+                "    supported_layer_types = {"
+            )
+            
+            if "Support clippable linear wrapper layers" in content:
+                print("✅ layers.py on disk is already patched.", flush=True)
+            elif target_str in content:
+                content = content.replace(target_str, replacement)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print("✅ Successfully patched layers.py on disk.", flush=True)
+            else:
+                # SGLang formatting fallback
+                target_str_alt = (
+                    "def get_lora_layer(\n"
+                    "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
+                    ") -> BaseLayerWithLoRA:\n"
+                    "    supported_layer_types = {"
+                )
+                if target_str_alt in content:
+                    replacement_alt = (
+                        "def get_lora_layer(\n"
+                        "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
+                        ") -> BaseLayerWithLoRA:\n"
+                        "    # Support clippable linear wrapper layers by unwrapping them to self.linear\n"
+                        "    layer_class_name = layer.__class__.__name__\n"
+                        "    if layer_class_name.startswith(\"Clippable\") and hasattr(layer, \"linear\"):\n"
+                        "        return get_lora_layer(layer.linear, lora_backend)\n\n"
+                        "    supported_layer_types = {"
+                    )
+                    content = content.replace(target_str_alt, replacement_alt)
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    print("✅ Successfully patched layers.py on disk (alternative format).", flush=True)
+                else:
+                    print("⚠️ Could not locate get_lora_layer target string in layers.py.", flush=True)
+        
+        # Apply in-memory monkeypatch as well
+        orig_get_lora_layer = lora_layers.get_lora_layer
+        if not getattr(orig_get_lora_layer, "__patched__", False):
+            try:
+                from sglang.srt.layers.clippable_linear import ClippableRowParallelLinear, ClippableColumnParallelLinear
+            except ImportError:
+                ClippableRowParallelLinear, ClippableColumnParallelLinear = None, None
+
+            def patched_get_lora_layer(layer, *args, **kwargs):
+                if ClippableRowParallelLinear is not None and isinstance(layer, ClippableRowParallelLinear):
+                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
+                if ClippableColumnParallelLinear is not None and isinstance(layer, ClippableColumnParallelLinear):
+                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
+                
+                # Fallback to class name check just in case
+                layer_class_name = layer.__class__.__name__
+                if layer_class_name.startswith("Clippable") and hasattr(layer, "linear"):
+                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
+                return orig_get_lora_layer(layer, *args, **kwargs)
+                
+            patched_get_lora_layer.__patched__ = True
+            lora_layers.get_lora_layer = patched_get_lora_layer
+            print("✅ In-memory monkeypatch applied to lora_layers.get_lora_layer.", flush=True)
+            
+    except Exception as e:
+        print(f"⚠️ Error while patching clippable linear layers: {e}", flush=True)
+
 def main():
+    patch_sglang_clippable_linear()
     # Ensure S3 adapters are downloaded if not present locally
     adapter_base_dir = "/app/output/adapter"
     if not has_local_adapter(adapter_base_dir):
