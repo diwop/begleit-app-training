@@ -239,7 +239,13 @@ def preprocess_adapter(adapter_dir: str) -> str:
                     new_key = new_key.replace("language_model.layers.", "model.layers.")
                 new_tensors[new_key] = tensor
                 
-            save_file(new_tensors, str(patched_safetensors_file), metadata=config)
+            # Convert all metadata values to string format for safetensors compliance
+            string_metadata = {
+                k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                for k, v in config.items()
+                if v is not None
+            }
+            save_file(new_tensors, str(patched_safetensors_file), metadata=string_metadata)
             print(f"✅ Successfully saved patched safetensors to {patched_safetensors_file}", flush=True)
         except Exception as e:
             print(f"❌ Error patching safetensors: {e}. Copying original file as fallback...", flush=True)
