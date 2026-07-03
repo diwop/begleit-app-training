@@ -735,15 +735,19 @@ def main():
     if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         gemma_adapter = "/app/output/adapter/train-gemma4"
     EVALUATION_PIPELINE = []
-    # Mistral stays on compressed-tensors AWQ layout
-    # EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-    #     EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
-
-    # Gemma routes through the official model repo with hardware native FP8 execution
-    # EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, None))
-    if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+    
+    # Gemma strategy: Check for merged FP8 model first (Production path)
+    merged_gemma_fp8 = "/app/output/merged/train-gemma4-fp8"
+    if os.path.exists(merged_gemma_fp8):
+        print(f"🌟 Found merged production model: {merged_gemma_fp8}. Using native FP8 execution.", flush=True)
+        EVALUATION_PIPELINE.append((merged_gemma_fp8, None, 8192, None))
+    elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+        # Fallback to adapter path (Legacy/Debug path)
+        print(f"🧬 No merged model found. Falling back to adapter execution: {gemma_adapter}", flush=True)
         EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, gemma_adapter))
+    else:
+        # Base model only
+        EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, None))
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     

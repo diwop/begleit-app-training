@@ -9,6 +9,7 @@ export PATH="/workspace/axolotl-venv/bin:$PATH"
 
 echo "Installing training dependencies into axolotl-venv..."
 uv pip install src-train/
+uv pip install "git+https://github.com/vllm-project/llm-compressor.git@main"
 
 export HF_HOME="/app/huggingface_cache"
 LOG_FILE="/app/training_run.log"

@@ -12,6 +12,8 @@ dependencies = [
     "awscli",
     "boto3",
     "transformers",
+    "peft",
+    "llmcompressor",
     "mistral_common>=1.11.0",
     "liger-kernel; sys_platform == 'linux'"
 ]

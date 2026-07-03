@@ -207,6 +207,94 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
         print(f"\n❌ [FATAL ERROR] Axolotl core process crashed on {config_path} with exit code {e.returncode}")
         sys.exit(1)
 
+def merge_gemma4_lora(base_model_id: str, adapter_dir: str, output_dir: str):
+    """
+    Phase 1: High-Precision Weights Merge
+    Consolidates LoRA adapter weights into the base BF16 model.
+    """
+    from transformers import AutoProcessor, AutoModelForCausalLM
+    from peft import PeftModel
+    
+    print("\n" + "="*60)
+    print(f"🧬 MERGING ADAPTER WEIGHTS: {adapter_dir}")
+    print("="*60, flush=True)
+
+    print(f"Loading base model in BF16: {base_model_id}")
+    # Using AutoModelForCausalLM for compatibility
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        trust_remote_code=True
+    )
+    
+    print("Loading processor configurations...")
+    processor = AutoProcessor.from_pretrained(base_model_id, trust_remote_code=True)
+    
+    print(f"Attaching LoRA adapter from: {adapter_dir}")
+    peft_model = PeftModel.from_pretrained(
+        base_model,
+        adapter_dir,
+        torch_dtype=torch.bfloat16
+    )
+    
+    print("Unloading PEFT towers and merging weights...")
+    merged_model = peft_model.merge_and_unload()
+    
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving unquantized consolidated model to: {output_dir}")
+    merged_model.save_pretrained(
+        output_dir,
+        safe_serialization=True,
+        max_shard_size="5GB"
+    )
+    processor.save_pretrained(output_dir)
+    print("✅ Weight merging completed successfully.")
+    return output_dir
+
+def run_fp8_compression(merged_bf16_dir: str, output_fp8_dir: str):
+    """
+    Phase 2: Post-Training FP8 Quantization
+    Compresses the merged BF16 model using FP8_DYNAMIC scheme.
+    """
+    from transformers import AutoProcessor, AutoModelForCausalLM
+    from llmcompressor import oneshot
+    from llmcompressor.modifiers.quantization import QuantizationModifier
+    
+    print("\n" + "="*60)
+    print(f"📉 APPLYING FP8 QUANTIZATION: {merged_bf16_dir}")
+    print("="*60, flush=True)
+
+    print(f"Loading merged BF16 model: {merged_bf16_dir}")
+    model = AutoModelForCausalLM.from_pretrained(
+        merged_bf16_dir,
+        torch_dtype="auto",
+        device_map="auto",
+        trust_remote_code=True
+    )
+    processor = AutoProcessor.from_pretrained(merged_bf16_dir, trust_remote_code=True)
+
+    # Configure the FP8_DYNAMIC scheme targeting linear projections
+    # CRITICAL: We target Linear layers but let llmcompressor handle 
+    # the MoE-specific structure through target filtering if needed.
+    # We skip vision, norm, and embeddings to preserve stability.
+    recipe = QuantizationModifier(
+        targets="Linear",
+        scheme="FP8_DYNAMIC",
+        ignore=["re:.*vision.*", "re:.*norm.*", "re:.*embed.*", "re:.*router.*", "re:.*gate$"]
+    )
+
+    print("Applying post-training FP8 quantization via one-shot API...")
+    oneshot(model=model, recipe=recipe)
+
+    os.makedirs(output_fp8_dir, exist_ok=True)
+    print(f"Saving quantized weights in compressed-tensors format to: {output_fp8_dir}")
+    model.save_pretrained(output_fp8_dir, save_compressed=True)
+    processor.save_pretrained(output_fp8_dir)
+    print("✅ FP8 Quantization process successfully completed!")
+    return output_fp8_dir
+
 def main():
 
     # Eliminate CPU management thread bloat across multi-GPU ranks
@@ -269,6 +357,31 @@ def main():
     for config_yaml_path in active_pipeline:
         output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
         completed_output_dirs.append((output_path, config_yaml_path))
+
+        # Check if we should merge and quantize (Gemma 4 specific strategy)
+        if "gemma4" in config_yaml_path.lower():
+            base_model_id = str(merged_config_data.get("base_model", "google/gemma-4-26B-A4B-it"))
+            merged_bf16_dir = f"/app/output/merged/{os.path.basename(output_path)}-bf16"
+            merged_fp8_dir = f"/app/output/merged/{os.path.basename(output_path)}-fp8"
+            
+            try:
+                # Phase 1: Merge
+                merge_gemma4_lora(base_model_id, output_path, merged_bf16_dir)
+                
+                # Phase 2: Quantize
+                run_fp8_compression(merged_bf16_dir, merged_fp8_dir)
+                
+                # Add the final merged model to completed dirs for S3 sync
+                completed_output_dirs.append((merged_fp8_dir, config_yaml_path))
+                
+                # Cleanup BF16 merged model to save disk space
+                print(f"🧹 Cleaning up intermediate BF16 merged model at {merged_bf16_dir}")
+                import shutil
+                shutil.rmtree(merged_bf16_dir, ignore_errors=True)
+                
+            except Exception as e:
+                print(f"❌ Error during post-training merge/quantization: {e}")
+                # We don't exit here to allow S3 sync of the adapter at least
 
     # Cloud Sync Layer
     s3_bucket = os.environ.get("S3_BUCKET", "")
