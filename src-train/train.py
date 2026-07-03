@@ -202,56 +202,44 @@ def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str,
     try:
         subprocess.run(cmd, check=True)
         print(f"\n🎉 [Success] Job completed successfully for {config_path}!")
-        return output_dir, merged_cfg
+        return output_dir, merged_cfg, temp_yaml_path
     except subprocess.CalledProcessError as e:
         print(f"\n❌ [FATAL ERROR] Axolotl core process crashed on {config_path} with exit code {e.returncode}")
         sys.exit(1)
 
-def merge_gemma4_lora(base_model_id: str, adapter_dir: str, output_dir: str):
+def merge_gemma4_lora(config_path: str, adapter_dir: str, output_dir: str):
     """
     Phase 1: High-Precision Weights Merge
-    Consolidates LoRA adapter weights into the base BF16 model.
+    Uses Axolotl's native CLI to consolidate LoRA adapter weights into the base BF16 model.
+    This ensures that architecture-specific patches (like Gemma4ClippableLinear) are correctly handled.
     """
-    from transformers import AutoProcessor, AutoModelForCausalLM
-    from peft import PeftModel
-    
     print("\n" + "="*60)
-    print(f"🧬 MERGING ADAPTER WEIGHTS: {adapter_dir}")
+    print(f"🧬 MERGING ADAPTER WEIGHTS (via Axolotl CLI): {adapter_dir}")
     print("="*60, flush=True)
 
-    print(f"Loading base model in BF16: {base_model_id}")
-    # Using AutoModelForCausalLM for compatibility
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        low_cpu_mem_usage=True,
-        trust_remote_code=True
-    )
+    # We use the same config used for training, but override output_dir and provide lora_model_dir
+    env = os.environ.copy()
+    env.setdefault("MASTER_ADDR", "localhost")
+    env.setdefault("MASTER_PORT", "12345")
+    env.setdefault("WORLD_SIZE", "1")
+    env.setdefault("RANK", "0")
+    env.setdefault("LOCAL_RANK", "0")
+
+    cmd = [
+        "python3", "-m", "axolotl.cli.merge_lora",
+        config_path,
+        f"--lora_model_dir={adapter_dir}",
+        f"--output_dir={output_dir}"
+    ]
     
-    print("Loading processor configurations...")
-    processor = AutoProcessor.from_pretrained(base_model_id, trust_remote_code=True)
-    
-    print(f"Attaching LoRA adapter from: {adapter_dir}")
-    peft_model = PeftModel.from_pretrained(
-        base_model,
-        adapter_dir,
-        torch_dtype=torch.bfloat16
-    )
-    
-    print("Unloading PEFT towers and merging weights...")
-    merged_model = peft_model.merge_and_unload()
-    
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Saving unquantized consolidated model to: {output_dir}")
-    merged_model.save_pretrained(
-        output_dir,
-        safe_serialization=True,
-        max_shard_size="5GB"
-    )
-    processor.save_pretrained(output_dir)
-    print("✅ Weight merging completed successfully.")
-    return output_dir
+    print(f"🚀 Executing merge command: {' '.join(cmd)}", flush=True)
+    try:
+        subprocess.run(cmd, check=True, env=env)
+        print(f"✅ Weight merging completed successfully at {output_dir}")
+        return output_dir
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Axolotl merge failed with exit code {e.returncode}")
+        raise e
 
 def run_fp8_compression(merged_bf16_dir: str, output_fp8_dir: str):
     """
@@ -351,22 +339,25 @@ def main():
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
     completed_output_dirs = []
+    import time
 
     print(f"🎬 Starting Pipeline Master Loop ({len(active_pipeline)} jobs registered)...")
     
     for config_yaml_path in active_pipeline:
-        output_path, merged_config_data = run_training_job(config_yaml_path, num_gpus, run_id)
+        output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus, run_id)
         completed_output_dirs.append((output_path, config_yaml_path))
-
-        # Check if we should merge and quantize (Gemma 4 specific strategy)
-        if "gemma4" in config_yaml_path.lower():
-            base_model_id = str(merged_config_data.get("base_model", "google/gemma-4-26B-A4B-it"))
-            merged_bf16_dir = f"/app/output/merged/{os.path.basename(output_path)}-bf16"
-            merged_fp8_dir = f"/app/output/merged/{os.path.basename(output_path)}-fp8"
+        
+        # Post-training Merge and Quantization
+        base_model_id = merged_config_data.get("base_model")
+        is_gemma4 = "gemma-4" in base_model_id.lower()
+        
+        if is_gemma4:
+            merged_bf16_dir = os.path.join(os.path.dirname(output_path), "merged-bf16")
+            merged_fp8_dir = os.path.join(os.path.dirname(output_path), "merged-fp8")
             
             try:
                 # Phase 1: Merge
-                merge_gemma4_lora(base_model_id, output_path, merged_bf16_dir)
+                merge_gemma4_lora(resolved_config_path, output_path, merged_bf16_dir)
                 
                 # Phase 2: Quantize
                 run_fp8_compression(merged_bf16_dir, merged_fp8_dir)
