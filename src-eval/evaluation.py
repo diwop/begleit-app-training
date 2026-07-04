@@ -449,12 +449,12 @@ def main():
         EVALUATION_PIPELINE.append((base_gemma, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned)", "gemma4"))
 
     # Model 4: Mistral Plain
-    # base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
-    # EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, "Mistral 119B (Plain)", None))
+    base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+    EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, "Mistral 119B (Plain)", None))
     
     # Model 5: Mistral Fine-tuned
-    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-    #     EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, mistral_adapter, "Mistral 119B (Fine-tuned)", None))
+    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+        EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, mistral_adapter, "Mistral 119B (Fine-tuned)", None))
 
     # 4. EXECUTE PIPELINE
     output_json = {
