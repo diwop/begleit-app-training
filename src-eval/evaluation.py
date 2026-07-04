@@ -57,7 +57,8 @@ def patch_sglang_gemma4_mm():
             print("✅ Already patched on disk.", flush=True)
         else:
             # Sophisticated replacement for get_hidden_dim
-            pattern = r"    def get_hidden_dim\(self, module_name, layer_idx\):.*?return self\.config\.hidden_size"
+            # We match until the next 'def ' to ensure we clear the whole old function body
+            pattern = r"    def get_hidden_dim\(self, module_name, layer_idx\):.*?(?=\n    def )"
             replacement = (
                 "    def get_hidden_dim(self, module_name, layer_idx):\n"
                 "        # Robust get_hidden_dim supporting standard, merged, and MoE layers\n"
@@ -68,7 +69,7 @@ def patch_sglang_gemma4_mm():
                 "            return self.config.intermediate_size if not is_moe else self.config.moe_intermediate_size\n"
                 "        if base_name == \"down_proj\":\n"
                 "            return self.config.hidden_size\n"
-                "        return self.config.hidden_size"
+                "        return self.config.hidden_size\n"
             )
             content = re.sub(pattern, replacement, content, flags=re.DOTALL)
             with open(target_path, "w", encoding="utf-8") as f:
