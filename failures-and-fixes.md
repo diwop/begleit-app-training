@@ -137,3 +137,15 @@
   - **get_lora_layer patch**: Unwraps clippable layers to their standard parallel linear layers (e.g. `layer.linear`) so SGLang can wrap them.
   - **lora_manager patch**: Skip named modules containing `"vision"` or `"audio"` in `lora_manager.py` to prevent wrapping vision tower/multimodal projections. Also filter out `"vision"` modules from the adapter's `target_modules` during preprocessing.
   - **CompressedTensorsW8A8Fp8MoE patch**: Implement `get_triton_quant_info` returning `TritonMoeQuantInfo` with `use_fp8_w8a8=True`.
+
+### Iteration 5: Monkeypatch Regex Over-matching and Syntax Errors
+* **Error**: `SyntaxError: 'return' outside function` or `AttributeError: module 'sglang.srt.models.gemma4_mm' has no attribute 'get_hidden_dim'`
+* **What didn't work**: Using a non-greedy regex (`.*?`) to replace the `get_hidden_dim` function body. In some SGLang versions, the function body contains internal `def` statements or complex logic that caused the regex to stop early or capture too much, leaving dangling code that broke the module import.
+* **Fix**: Updated the regex in `src-eval/evaluation.py` to be greedy (`.*?(?=\n    def )`) or explicitly target the entire function block until the next top-level definition. This ensures the entire function is replaced cleanly without leaving syntax-breaking residue.
+
+## 2-GPU Inference
+
+### Iteration 1: NCCL P2P Handshake Deadlock on L40S Pods
+* **Error**: SGLang engine hangs indefinitely during `Init START` with `TP_SIZE=2`. VRAM spikes to ~70% and stays there with 0% GPU utilization.
+* **What didn't work**: Standard `TP_SIZE=2` initialization. The dual-L40S pod configuration (on certain RunPod providers) has issues with Peer-to-Peer (P2P) memory access over the PCIe bus during the NCCL handshake, causing the ranks to deadlock while waiting for a response that never arrives.
+* **Fix**: Set `NCCL_P2P_DISABLE=1` in the environment before launching the evaluation script. This forces NCCL to use shared memory or standard PCIe transfers instead of direct P2P, bypassing the hardware-level handshake deadlock.
