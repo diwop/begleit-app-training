@@ -53,7 +53,7 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
     
     try:
         # DYNAMIC HARDWARE DETECTION
-        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 1))
         if available_gpus not in [1, 2, 4, 8]:
             print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
             available_gpus = 2
@@ -675,15 +675,9 @@ def main():
         "Was ist die Quadratwurzel aus 16?",
         "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg...",
         "Guten Tag! Wie geht es Ihnen?",
-        "guten Tag wie geht es ihnen",
-        "Guten Tag, Herr Müller! Wie geht es Ihnen?",
-        "guten Tag Herr Müller wie geht es ihnen",
         "Herr Müller, beim letzten Mal haben wir über Bluthochdruck gesprochen. Erinnern sie sich noch, was das bedeutet?",
-        "Herr Müller beim letzten mal haben wir über Bluthochdruck gesprochen erinnern sie sich noch was das bedeutet",
         "Das hier sind Ihre Blutdruckwerte aus der letzten Woche. Da können Sie sehen, dass der Blutdruck immer noch zu hoch ist. Sie sollten versuchen, Ihren Blutdruck zu senken. Das können Sie tun, indem Sie weniger Salz essen und mehr Sport treiben. Ansonsten können Sie auch einen Blutdrucksenker einnehmen. Aber erstmal sollten wir es mit den Anpassungen bei Ihrem Lebensstil versuchen. Haben Sie dazu Fragen?",
-        "Das hier sind ihre Blutdruckwerte aus der letzten Woche da können sie sehen das der Blutdruck immer noch zu hoch ist sie sollten versuchen ihren Blutdruck zu senken das können sie tun indem sie weniger Salz essen und mehr Sport treiben ansonsten können sie auch einen Blutdrucksenker einnehmen aber erstmal sollten wir es mit den Anpassungen bei ihrem Lebensstil versuchen haben sie dazu Fragen",
         "Haben Sie noch eine angenehme Woche. Bis zum nächsten Mal!",
-        "haben Sie noch eine angenehme Woche bis zum nächsten mal",
         "Die Quantenchromodynamik (kurz QCD) ist eine Quantenfeldtheorie zur Beschreibung der starken Wechselwirkung. Sie beschreibt die Wechselwirkung von Quarks und Gluonen, also der fundamentalen Bausteine der Atomkerne.\nDie QCD ist wie die Quantenelektrodynamik (QED) eine Eichtheorie. Während die QED jedoch auf der abelschen Eichgruppe U(1) beruht und die Wechselwirkung elektrisch geladener Teilchen (z. B. Elektron oder Positron) mit Photonen beschreibt, wobei die Photonen selbst ungeladen sind, ist die Eichgruppe der QCD, die SU(3), nicht-abelsch. Es handelt sich also um eine Yang-Mills-Theorie. Die Wechselwirkungsteilchen der QCD sind die Gluonen, und an die Stelle der elektrischen Ladung als Erhaltungsgröße tritt die Farbladung (daher der Name Chromodynamik). Die Gluonen selbst sind im Gegensatz zu den Eichteilchen der QED „geladen“, das heißt Träger von Farbladungen, und wechselwirken auch untereinander.",
         "# Lachs im Sesammantel auf Erbsenpüree und Zuckerschotenstroh\nZutaten Für 4 Portionen:\n* 4 Lachssteak(s) küchenfertig, à 140 g\n* 4 EL Sesam geröstet, weiß und schwarz\n* 2 EL Öl (Woköl mit Sesamaroma)\n* 2 EL Butter\n* 2 Schalotte(n)\n* 400 g Erbsen, TK\n* 2 EL Sahne\n* Salz und Pfeffer\n* Muskat\n* Zucker\n* 100 g Zuckerschote(n)\n* 1 EL Butter\n* Erbsensprossen (Erbsenspargelsprossen) für die Dekoration\nGesamtzeit: 35 Min.\nArbeitszeit: 25 Min.\nKoch-/Backzeit: 10 Min.\n1. Die Schalotten abziehen und in Würfel schneiden. Diese in einem Topf mit der Butter angehen lassen, die aufgetauten Erbsen zufügen. Etwas angehen lassen und mit Salz, Pfeffer, Zucker und Muskat würzen. Sahne zufügen, ca. fünf Minuten dünsten und danach im Mixer sehr fein pürieren.\n2. Den Lachs im Sesam wenden und in einer Pfanne mit dem Öl bei mittlerer Hitze von beiden Seiten je zwei Minuten braten und anschließend zwei Minuten ruhen lassen. Mit Salz und Pfeffer würzen.\n3. Die Zuckerschoten in dünne Streifen schneiden und in Butter glacieren. Mit Salz, Muskat und etwas Zucker würzen.\n4. Anrichten: Das Püree auf einem tiefen Teller anrichten, den aufgeschnittenen Lachs darauf setzen und von den glacierten Schoten einen Löffel dararauf verteilen. Mit Erbsspargelsprossen dekorieren.\n5. Guten Appetit!",
         "The Creation of the World\nIn the beginning, God created the heavens and the earth. The earth was without form and void, and darkness was over the face of the deep. And the Spirit of God was hovering over the face of the waters.\nAnd God said, “Let there be light,” and there was light. And God saw that the light was good. And God separated the light from the darkness. God called the light Day, and the darkness he called Night. And there was evening and there was morning, the first day.",
@@ -737,11 +731,18 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
     EVALUATION_PIPELINE = []
     
+    # LIMITING FOR FAST VERIFICATION
+    # evaluation_set = evaluation_set[:8]
+    # (Actually we want to keep the integrity check and 7 prompts)
+    evaluation_set = evaluation_set[:8]
+    
     base_model_id = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
     
     # Variant 1: Plain Gemma (No reasoning parser)
     EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Plain)", None))
     
+    # Variant 2 and 3 disabled for rapid verification
+    """
     # Variant 2: Gemma with Reasoning (With reasoning parser)
     EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Reasoning)", "gemma4"))
     
@@ -766,6 +767,7 @@ def main():
         EVALUATION_PIPELINE.append((base_model_id, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned + Reasoning)", "gemma4"))
     else:
         print("⚠️ Warning: Fine-tuned variant requested but neither merged model nor adapter found. Skipping Variant 3.", flush=True)
+    """
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
@@ -801,6 +803,13 @@ def main():
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
             output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf, reasoning_trace])
+
+        # CHECKPOINT SAVE AFTER EACH MODEL
+        checkpoint_filename = f"evaluation/checkpoint_{display_name.replace(' ', '_')}.json"
+        os.makedirs("evaluation", exist_ok=True)
+        with open(checkpoint_filename, "w", encoding="utf-8") as f:
+            json.dump(output_json, f, ensure_ascii=False, indent=2)
+        print(f"💾 Checkpoint saved for {display_name}: {checkpoint_filename}", flush=True)
 
     # POST-PROCESSING: Append tuning ground truth references
     print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
