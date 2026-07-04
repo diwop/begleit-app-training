@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-cd /runner/repo/
+# Navigate to the repository root relative to the script location
+cd "$(dirname "$0")/.."
 
 LOG_FILE="/app/evaluation_run.log"
 
