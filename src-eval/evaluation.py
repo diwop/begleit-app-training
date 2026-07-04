@@ -33,13 +33,240 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
         f"with extensions {extensions}."
     )
 
-def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_set, reasoning_parser=None):
+def patch_sglang_gemma4_mm():
     """
-    Launches a dedicated SGLang Engine for the specific model/adapter pair,
-    executes batch inference, and returns cleaned (text, reasoning) tuples.
+    Patches SGLang's gemma4_mm.py file to handle '_moe' suffixes and all individual
+    attention/MLP modules (q_proj, k_proj, v_proj, gate_proj, up_proj) in get_hidden_dim
+    to prevent NotImplementedError crashes in LoRA initialization.
     """
-    is_gemma = "gemma" in model_id.lower()
-    generated_responses = []
+    try:
+        import sglang.srt.models.gemma4_mm as gemma4_mm
+        target_path = gemma4_mm.__file__
+        if target_path.endswith(".pyc"):
+            target_path = target_path[:-1]
+            
+        if not os.path.exists(target_path):
+            print(f"ℹ️ SGLang gemma4_mm.py path {target_path} not found. Skipping file patch.", flush=True)
+            return
+            
+        print(f"🛠️ Patching {target_path} to support all module keys in get_hidden_dim...", flush=True)
+        with open(target_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if 'Robust get_hidden_dim supporting standard, merged, and MoE layers' in content and 'is_moe = module_name' in content:
+            print("✅ Already patched on disk.", flush=True)
+        else:
+            # Sophisticated replacement for get_hidden_dim
+            pattern = r"    def get_hidden_dim\(self, module_name, layer_idx\):.*?return self\.config\.hidden_size"
+            replacement = (
+                "    def get_hidden_dim(self, module_name, layer_idx):\n"
+                "        # Robust get_hidden_dim supporting standard, merged, and MoE layers\n"
+                "        is_moe = module_name.endswith(\"_moe\")\n"
+                "        base_name = module_name[:-4] if is_moe else module_name\n"
+                "        \n"
+                "        if base_name in [\"gate_proj\", \"up_proj\"]:\n"
+                "            return self.config.intermediate_size if not is_moe else self.config.moe_intermediate_size\n"
+                "        if base_name == \"down_proj\":\n"
+                "            return self.config.hidden_size\n"
+                "        return self.config.hidden_size"
+            )
+            content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print("✅ Successfully patched gemma4_mm.py on disk.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error while patching gemma4_mm.py: {e}", flush=True)
+
+def patch_sglang_gemma4_causal():
+    """
+    Patches SGLang's gemma4_causal.py file to add get_hidden_dim supporting hybrid attention and MoE.
+    """
+    try:
+        import sglang.srt.models.gemma4_causal as gemma4_causal
+        target_path = gemma4_causal.__file__
+        if target_path.endswith(".pyc"):
+            target_path = target_path[:-1]
+            
+        if not os.path.exists(target_path):
+            print(f"ℹ️ SGLang gemma4_causal.py path {target_path} not found. Skipping file patch.", flush=True)
+            return
+            
+        print(f"🛠️ Patching {target_path} to support get_hidden_dim...", flush=True)
+        with open(target_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if 'Robust get_hidden_dim supporting standard, merged, and MoE layers' in content and 'is_moe = module_name' in content:
+            print("✅ Already patched causal on disk.", flush=True)
+        else:
+            patch_code = (
+                "\n    def get_hidden_dim(self, module_name, layer_idx):\n"
+                "        # Robust get_hidden_dim supporting standard, merged, and MoE layers\n"
+                "        is_moe = module_name.endswith(\"_moe\")\n"
+                "        base_name = module_name[:-4] if is_moe else module_name\n"
+                "        \n"
+                "        if base_name in [\"gate_proj\", \"up_proj\"]:\n"
+                "            return self.config.intermediate_size if not is_moe else self.config.moe_intermediate_size\n"
+                "        if base_name == \"down_proj\":\n"
+                "            return self.config.hidden_size\n"
+                "        return self.config.hidden_size\n"
+            )
+            if "class Gemma4ForCausalLM(nn.Module):" in content:
+                content = content.replace("class Gemma4ForCausalLM(nn.Module):", "class Gemma4ForCausalLM(nn.Module):" + patch_code)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print("✅ Successfully patched gemma4_causal.py on disk.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error while patching gemma4_causal.py: {e}", flush=True)
+
+def patch_sglang_lora_mem_pool():
+    """
+    Patches SGLang's mem_pool.py file to ensure both standard 3D buffers
+    and MoE 4D buffers are initialized for hybrid models (like Gemma 4)
+    that contain both dense MLP layers and MoE layers.
+    """
+    try:
+        import sglang.srt.lora.mem_pool as mem_pool
+        target_path = mem_pool.__file__
+        if target_path.endswith(".pyc"):
+            target_path = target_path[:-1]
+            
+        if not os.path.exists(target_path):
+            print(f"ℹ️ SGLang mem_pool.py path {target_path} not found. Skipping file patch.", flush=True)
+            return
+            
+        print(f"🛠️ Patching {target_path} to support hybrid model buffers...", flush=True)
+        with open(target_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if "if is_moe:" in content and "else:" in content:
+             print("✅ mem_pool.py on disk is already patched.", flush=True)
+        else:
+            target_str = "        self.pool = torch.zeros(self.pool_shape, dtype=dtype, device=device)"
+            replacement = (
+                "        self.pool = torch.zeros(self.pool_shape, dtype=dtype, device=device)\n"
+                "        # Ensure 4D pool for MoE exists if 3D was requested as primary\n"
+                "        if len(self.pool_shape) == 3:\n"
+                "            moe_shape = (self.pool_shape[0], 1, self.pool_shape[1], self.pool_shape[2])\n"
+                "            self.moe_pool = torch.zeros(moe_shape, dtype=dtype, device=device)\n"
+                "        else:\n"
+                "            self.moe_pool = self.pool"
+            )
+            if target_str in content:
+                content = content.replace(target_str, replacement)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print("✅ Successfully patched mem_pool.py on disk.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error while patching mem_pool.py: {e}", flush=True)
+
+def patch_sglang_lora_manager():
+    """
+    Patches SGLang's lora_manager.py file to ensure should_apply_lora is respected.
+    """
+    try:
+        import sglang.srt.lora.lora_manager as lora_manager
+        target_path = lora_manager.__file__
+        if target_path.endswith(".pyc"):
+            target_path = target_path[:-1]
+            
+        if not os.path.exists(target_path):
+            print(f"ℹ️ SGLang lora_manager.py path {target_path} not found. Skipping file patch.", flush=True)
+            return
+            
+        print(f"🛠️ Patching {target_path} to respect should_apply_lora...", flush=True)
+        with open(target_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if 'hasattr(self.base_model, "should_apply_lora")' in content:
+            print("✅ lora_manager.py on disk is already patched.", flush=True)
+        else:
+            target_str = (
+                "            # The module should be converted if it is included in target_names\n"
+                "            if module_name.split(\".\")[-1] in self.target_modules:\n"
+                "                layer_id = get_layer_id(module_name)"
+            )
+            replacement = (
+                "            # The module should be converted if it is included in target_names\n"
+                "            if module_name.split(\".\")[-1] in self.target_modules:\n"
+                "                if hasattr(self.base_model, \"should_apply_lora\") and not self.base_model.should_apply_lora(module_name):\n"
+                "                    continue\n"
+                "                layer_id = get_layer_id(module_name)"
+            )
+            if target_str in content:
+                content = content.replace(target_str, replacement)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print("✅ Successfully patched lora_manager.py on disk.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error while patching lora_manager.py: {e}", flush=True)
+
+def patch_sglang_compressed_tensors_moe():
+    """Patch CompressedTensorsW8A8Fp8MoE to support get_triton_quant_info"""
+    try:
+        import sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8_moe as scheme_module
+        if hasattr(scheme_module.CompressedTensorsW8A8Fp8MoE, "get_triton_quant_info"):
+             print("✅ CompressedTensorsW8A8Fp8MoE already has get_triton_quant_info.", flush=True)
+             return
+
+        def get_triton_quant_info(self, layer):
+            from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+            return TritonMoeQuantInfo(
+                w13_weight=layer.w13_weight,
+                w2_weight=layer.w2_weight,
+                use_fp8_w8a8=True,
+                w13_scale=layer.w13_weight_scale,
+                w2_scale=layer.w2_weight_scale,
+                a13_scale=layer.w13_input_scale,
+                a2_scale=layer.w2_input_scale,
+            )
+        scheme_module.CompressedTensorsW8A8Fp8MoE.get_triton_quant_info = get_triton_quant_info
+        print("✅ In-memory monkeypatch applied to CompressedTensorsW8A8Fp8MoE.get_triton_quant_info.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Error while patching SGLang scheme: {e}", flush=True)
+
+def preprocess_adapter(adapter_id: str):
+    """
+    Cleans up the adapter config and safetensors for Gemma 4 architecture.
+    """
+    if not adapter_id or not os.path.exists(adapter_id):
+        return
+        
+    config_path = os.path.join(adapter_id, "adapter_config.json")
+    safetensors_path = os.path.join(adapter_id, "adapter_model.safetensors")
+    
+    if os.path.exists(config_path):
+        print(f"🛠️ Preprocessing adapter config in {config_path}...")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        target_modules = config.get("target_modules", [])
+        if any("language_model" in m for m in target_modules):
+            new_targets = [m.replace("language_model.model.", "model.").replace("language_model.", "model.") for m in target_modules]
+            config["target_modules"] = new_targets
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            print(f"✅ Filtered target modules.")
+
+    if os.path.exists(safetensors_path):
+        print(f"🛠️ Preprocessing safetensors in {safetensors_path}...")
+        try:
+            from safetensors.torch import load_file, save_file
+            tensors = load_file(safetensors_path)
+            new_tensors = {}
+            for key, tensor in tensors.items():
+                new_key = key.replace("language_model.model.", "model.").replace("language_model.", "model.")
+                new_tensors[new_key] = tensor
+            save_file(new_tensors, safetensors_path)
+            print("✅ Safetensors keys cleaned.")
+        except Exception as e:
+            print(f"⚠️ Error preprocessing safetensors: {e}")
+
+def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None, reasoning_parser=None):
+    """
+    Initializes the engine and processes conversations.
+    """
+    if evaluation_set is None:
+        evaluation_set = []
         
     print("\n" + "="*60)
     print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {model_id}")
@@ -49,16 +276,11 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
     
     generated_responses = []
     is_gemma = "gemma" in model_id.lower()
-    is_mistral = "mistral" in model_id.lower()
     
     try:
         # DYNAMIC HARDWARE DETECTION
-        available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 1))
-        if available_gpus not in [1, 2, 4, 8]:
-            print(f"⚠️ Warning: Asymmetrical GPU count ({available_gpus}) detected. Falling back to 2.")
-            available_gpus = 2
-
-        # 1. LOAD TOKENIZER AND FORMAT CHAT PROMPTS
+        available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 2))
+        
         print("📖 Loading tokenizer and formatting chat prompts...", flush=True)
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         
@@ -75,7 +297,6 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
             )
             prompts.append(formatted_prompt)
 
-        # 2. CONFIGURE SGLANG ENGINE
         engine_kwargs = {
             "model_path": model_id,
             "tp_size": available_gpus,
@@ -88,38 +309,26 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
             engine_kwargs["quantization"] = quantization_type
             
         if adapter_id:
+            preprocess_adapter(adapter_id)
             engine_kwargs["enable_lora"] = True
             engine_kwargs["lora_paths"] = [f"adapter0={adapter_id}"]
             engine_kwargs["max_loras_per_batch"] = 1
             
-        # Gemma-specific backend overrides to bypass FlashInfer heterogeneous dimension crash
-        # and CUDA graph numerical drift/garbage output bugs.
         if is_gemma:
-            print("🔧 Applying Gemma-specific engine overrides (Triton backends, disabled CUDA graph)", flush=True)
+            print("🔧 Applying Gemma-specific engine overrides", flush=True)
             engine_kwargs["attention_backend"] = "triton"
             engine_kwargs["moe_runner_backend"] = "triton"
             engine_kwargs["disable_cuda_graph"] = True
-            engine_kwargs["mem_fraction_static"] = 0.70
 
         print(f"⚙️ Initializing SGLang Engine with parameters: {engine_kwargs}", flush=True)
         llm = sgl.Engine(**engine_kwargs)
         
-        # 3. SET SAMPLING PARAMS
-        if is_gemma:
-            sampling_params = {
-                "temperature": 1.0,
-                "top_p": 0.95,
-                "top_k": 64,
-                "max_new_tokens": 4096,
-                "skip_special_tokens": False
-            }
-        else:
-            sampling_params = {
-                "temperature": 0.3,
-                "top_p": 0.95,
-                "max_new_tokens": 4096,
-                "skip_special_tokens": False
-            }
+        sampling_params = {
+            "temperature": 1.0 if is_gemma else 0.3,
+            "top_p": 0.95,
+            "max_new_tokens": 4096,
+            "skip_special_tokens": False
+        }
             
         generate_kwargs = {}
         if adapter_id:
@@ -132,7 +341,6 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
             raw_text = out["text"].strip()
             reasoning_trace = ""
             
-            # Universal string extraction regex for plain tags and Gemma hardware tokens
             think_match = re.search(
                 r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
                 raw_text, 
@@ -141,7 +349,6 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
             if think_match:
                 reasoning_trace = think_match.group(1).strip()
                 
-            # Wipe structural thought text sequences entirely out of final textstat payloads
             raw_text = re.sub(
                 r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
                 "", 
@@ -160,8 +367,8 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
         if 'llm' in locals():
             try:
                 llm.shutdown()
-            except Exception as e:
-                print(f"⚠️ Error shutting down SGLang Engine: {e}", flush=True)
+            except:
+                pass
             del llm
         gc.collect()
         torch.cuda.empty_cache()
@@ -170,497 +377,22 @@ def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_
         
     return generated_responses
 
-def has_local_adapter(adapter_dir="/app/output/adapter"):
-    if not os.path.exists(adapter_dir):
-        return False
-    for root, dirs, files in os.walk(adapter_dir):
-        if "adapter_config.json" in files:
-            return True
-    return False
-
-def preprocess_adapter(adapter_dir: str) -> str:
-    """
-    Preprocesses Gemma 4 PEFT adapter by removing multimodal prefixes from
-    adapter_config.json and rewriting keys in adapter_model.safetensors or bin.
-    Saves the patched files in an adjacent folder with suffix '-patched'.
-    """
-    if not adapter_dir:
-        return adapter_dir
-        
-    adapter_path = Path(adapter_dir).resolve()
-    if not adapter_path.exists():
-        return adapter_dir
-        
-    config_file = adapter_path / "adapter_config.json"
-    if not config_file.exists():
-        return adapter_dir
-
-    patched_dir = adapter_path.parent / f"{adapter_path.name}-patched"
-    patched_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Update adapter_config.json to clean target_modules
-    print(f"🔧 Preprocessing adapter config in {config_file}...", flush=True)
-    with open(config_file, "r", encoding="utf-8") as f:
-        config = json.load(f)
-        
-    target_modules = config.get("target_modules", [])
-    if isinstance(target_modules, list):
-        new_target_modules = []
-        for tm in target_modules:
-            if isinstance(tm, str):
-                if "vision" in tm:
-                    print(f"✂️ Filtering out vision module from target_modules: {tm}", flush=True)
-                    continue
-                cleaned = tm.replace("base_model.model.language_model.model.", "base_model.model.")
-                cleaned = cleaned.replace("language_model.model.", "model.")
-                cleaned = cleaned.replace("language_model.", "model.")
-                new_target_modules.append(cleaned)
-            else:
-                new_target_modules.append(tm)
-        config["target_modules"] = new_target_modules
-    
-    # Write updated config to patched dir
-    patched_config_file = patched_dir / "adapter_config.json"
-    with open(patched_config_file, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        
-    # 2. Update weight keys in safetensors or bin files
-    safetensors_file = adapter_path / "adapter_model.safetensors"
-    patched_safetensors_file = patched_dir / "adapter_model.safetensors"
-    
-    if safetensors_file.exists():
-        print(f"🔧 Preprocessing adapter safetensors in {safetensors_file}...", flush=True)
-        try:
-            from safetensors.torch import load_file, save_file
-            
-            tensors = load_file(str(safetensors_file))
-            new_tensors = {}
-            for key, tensor in tensors.items():
-                new_key = key
-                if "language_model.model.layers." in new_key:
-                    new_key = new_key.replace("language_model.model.layers.", "model.layers.")
-                elif "language_model.layers." in new_key:
-                    new_key = new_key.replace("language_model.layers.", "model.layers.")
-                new_tensors[new_key] = tensor
-                
-            # Convert all metadata values to string format for safetensors compliance
-            string_metadata = {
-                k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                for k, v in config.items()
-                if v is not None
-            }
-            save_file(new_tensors, str(patched_safetensors_file), metadata=string_metadata)
-            print(f"✅ Successfully saved patched safetensors to {patched_safetensors_file}", flush=True)
-        except Exception as e:
-            print(f"❌ Error patching safetensors: {e}. Copying original file as fallback...", flush=True)
-            import shutil
-            shutil.copy2(safetensors_file, patched_safetensors_file)
-    else:
-        # Check fallback to PyTorch weight dictionary format (.bin)
-        bin_file = adapter_path / "adapter_model.bin"
-        patched_bin_file = patched_dir / "adapter_model.bin"
-        if bin_file.exists():
-            print(f"🔧 Preprocessing adapter bin in {bin_file}...", flush=True)
-            try:
-                import torch
-                state_dict = torch.load(str(bin_file), map_location="cpu")
-                new_state_dict = {}
-                for key, tensor in state_dict.items():
-                    new_key = key
-                    if "language_model.model.layers." in new_key:
-                        new_key = new_key.replace("language_model.model.layers.", "model.layers.")
-                    elif "language_model.layers." in new_key:
-                        new_key = new_key.replace("language_model.layers.", "model.layers.")
-                    new_state_dict[new_key] = tensor
-                torch.save(new_state_dict, str(patched_bin_file))
-                print(f"✅ Successfully saved patched bin to {patched_bin_file}", flush=True)
-            except Exception as e:
-                print(f"❌ Error patching bin file: {e}. Copying original file as fallback...", flush=True)
-                import shutil
-                shutil.copy2(bin_file, patched_bin_file)
-                
-    # Copy other accessory files (e.g. README.md, tokenizer configuration, etc.)
-    for item in adapter_path.iterdir():
-        if item.is_file() and item.name not in ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"]:
-            import shutil
-            shutil.copy2(item, patched_dir / item.name)
-            
-    return str(patched_dir)
-
-def get_newest_run_prefix(bucket_name: str) -> str:
-    s3_client = boto3.client('s3')
-    paginator = s3_client.get_paginator('list_objects_v2')
-    prefixes = []
-    
-    # Try using delimiter first (efficient)
-    for page in paginator.paginate(Bucket=bucket_name, Delimiter='/'):
-        for cp in page.get('CommonPrefixes', []):
-            prefix = cp.get('Prefix', '')
-            base = prefix.strip('/')
-            if '_run' in base:
-                prefixes.append(prefix)
-                
-    if not prefixes:
-        # Fallback: list all objects and parse prefixes
-        for page in paginator.paginate(Bucket=bucket_name):
-            for obj in page.get('Contents', []):
-                key = obj.get('Key', '')
-                parts = key.split('/')
-                if len(parts) > 1:
-                    first_dir = parts[0]
-                    if '_run' in first_dir:
-                        prefixes.append(first_dir + '/')
-                        
-    if not prefixes:
-        raise ValueError(f"No run folders (containing '_run') found in bucket {bucket_name}")
-        
-    return sorted(list(set(prefixes)))[-1]
-
-def download_s3_folder(bucket_name: str, prefix: str, local_dir: str):
-    s3_client = boto3.client('s3')
-    paginator = s3_client.get_paginator('list_objects_v2')
-    print(f"📥 Downloading s3://{bucket_name}/{prefix} to {local_dir}...", flush=True)
-    
-    for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-        for obj in page.get('Contents', []):
-            key = obj.get('Key', '')
-            if key.endswith('/'):
-                continue
-                
-            rel_path = key[len(prefix):]
-            local_file_path = os.path.join(local_dir, rel_path)
-            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
-            
-            print(f"  Downloading: {key} -> {local_file_path}", flush=True)
-            s3_client.download_file(bucket_name, key, local_file_path)
-
-def patch_sglang_clippable_linear():
-    """
-    Patches SGLang's layers.py file on disk and in memory to support
-    wrapping ClippableRowParallelLinear and other clippable wrappers with LoRA.
-    Also patches CompressedTensorsW8A8Fp8MoE to implement get_triton_quant_info.
-    """
-    try:
-        import sglang.srt.lora.layers as lora_layers
-        target_path = lora_layers.__file__
-        if target_path.endswith(".pyc"):
-            target_path = target_path[:-1]
-            
-        if os.path.exists(target_path):
-            print(f"🛠️ Patching SGLang layers.py on disk at {target_path}...", flush=True)
-            with open(target_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                
-            target_str = "def get_lora_layer(\n    layer: nn.Module, lora_backend: BaseLoRABackend\n) -> BaseLayerWithLoRA:\n    supported_layer_types = {"
-            replacement = (
-                "def get_lora_layer(\n"
-                "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
-                ") -> BaseLayerWithLoRA:\n"
-                "    # Support clippable linear wrapper layers by unwrapping them to self.linear\n"
-                "    layer_class_name = layer.__class__.__name__\n"
-                "    if layer_class_name.startswith(\"Clippable\") and hasattr(layer, \"linear\"):\n"
-                "        return get_lora_layer(layer.linear, lora_backend)\n\n"
-                "    supported_layer_types = {"
-            )
-            
-            if "Support clippable linear wrapper layers" in content:
-                print("✅ layers.py on disk is already patched.", flush=True)
-            elif target_str in content:
-                content = content.replace(target_str, replacement)
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                print("✅ Successfully patched layers.py on disk.", flush=True)
-            else:
-                # SGLang formatting fallback
-                target_str_alt = (
-                    "def get_lora_layer(\n"
-                    "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
-                    ") -> BaseLayerWithLoRA:\n"
-                    "    supported_layer_types = {"
-                )
-                if target_str_alt in content:
-                    replacement_alt = (
-                        "def get_lora_layer(\n"
-                        "    layer: nn.Module, lora_backend: BaseLoRABackend\n"
-                        ") -> BaseLayerWithLoRA:\n"
-                        "    # Support clippable linear wrapper layers by unwrapping them to self.linear\n"
-                        "    layer_class_name = layer.__class__.__name__\n"
-                        "    if layer_class_name.startswith(\"Clippable\") and hasattr(layer, \"linear\"):\n"
-                        "        return get_lora_layer(layer.linear, lora_backend)\n\n"
-                        "    supported_layer_types = {"
-                    )
-                    content = content.replace(target_str_alt, replacement_alt)
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    print("✅ Successfully patched layers.py on disk (alternative format).", flush=True)
-                else:
-                    print("⚠️ Could not locate get_lora_layer target string in layers.py.", flush=True)
-
-        # Patch SGLang's lora_manager.py to skip vision layers
-        lora_dir = os.path.dirname(target_path)
-        manager_path = os.path.join(lora_dir, "lora_manager.py")
-        if os.path.exists(manager_path):
-            print(f"🛠️ Patching SGLang lora_manager.py on disk at {manager_path}...", flush=True)
-            with open(manager_path, "r", encoding="utf-8") as f:
-                manager_content = f.read()
-                
-            manager_target = "        for module_name, module in self.base_model.named_modules():"
-            manager_replacement = (
-                "        for module_name, module in self.base_model.named_modules():\n"
-                "            if \"vision\" in module_name or \"audio\" in module_name:\n"
-                "                continue"
-            )
-            
-            if "if \"vision\" in module_name or \"audio\" in module_name:" in manager_content:
-                print("✅ lora_manager.py on disk is already patched.", flush=True)
-            elif manager_target in manager_content:
-                manager_content = manager_content.replace(manager_target, manager_replacement)
-                with open(manager_path, "w", encoding="utf-8") as f:
-                    f.write(manager_content)
-                print("✅ Successfully patched lora_manager.py on disk.", flush=True)
-            else:
-                print("⚠️ Could not locate named_modules target string in lora_manager.py.", flush=True)
-        
-        # Apply in-memory monkeypatch as well
-        orig_get_lora_layer = lora_layers.get_lora_layer
-        if not getattr(orig_get_lora_layer, "__patched__", False):
-            try:
-                from sglang.srt.layers.clippable_linear import ClippableRowParallelLinear, ClippableColumnParallelLinear
-            except ImportError:
-                ClippableRowParallelLinear, ClippableColumnParallelLinear = None, None
-
-            def patched_get_lora_layer(layer, *args, **kwargs):
-                if ClippableRowParallelLinear is not None and isinstance(layer, ClippableRowParallelLinear):
-                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
-                if ClippableColumnParallelLinear is not None and isinstance(layer, ClippableColumnParallelLinear):
-                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
-                
-                # Fallback to class name check just in case
-                layer_class_name = layer.__class__.__name__
-                if layer_class_name.startswith("Clippable") and hasattr(layer, "linear"):
-                    return patched_get_lora_layer(layer.linear, *args, **kwargs)
-                return orig_get_lora_layer(layer, *args, **kwargs)
-                
-            patched_get_lora_layer.__patched__ = True
-            lora_layers.get_lora_layer = patched_get_lora_layer
-            print("✅ In-memory monkeypatch applied to lora_layers.get_lora_layer.", flush=True)
-            
-    except Exception as e:
-        print(f"⚠️ Error while patching clippable linear layers: {e}", flush=True)
-
-    # Patch CompressedTensorsW8A8Fp8MoE to support get_triton_quant_info
-    try:
-        import sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8_moe as scheme_module
-        scheme_path = scheme_module.__file__
-        if scheme_path.endswith(".pyc"):
-            scheme_path = scheme_path[:-1]
-
-        if os.path.exists(scheme_path):
-            print(f"🛠️ Patching SGLang scheme on disk at {scheme_path}...", flush=True)
-            with open(scheme_path, "r", encoding="utf-8") as f:
-                scheme_content = f.read()
-
-            target_str = (
-                "        if (\n"
-                "            moe_runner_backend.is_aiter()\n"
-                "            or moe_runner_backend.is_triton()\n"
-                "            or moe_runner_backend.is_flashinfer_trtllm()\n"
-                "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
-                "        ):\n"
-                "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
-                "        else:\n"
-                "            # TODO(cwan): refactor other backends\n"
-                "            pass\n\n"
-                "    def apply_weights("
-            )
-            
-            replacement = (
-                "        if (\n"
-                "            moe_runner_backend.is_aiter()\n"
-                "            or moe_runner_backend.is_triton()\n"
-                "            or moe_runner_backend.is_flashinfer_trtllm()\n"
-                "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
-                "        ):\n"
-                "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
-                "        else:\n"
-                "            # TODO(cwan): refactor other backends\n"
-                "            pass\n\n"
-                "    def get_triton_quant_info(self, layer):\n"
-                "        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo\n"
-                "        if self.weight_quant.strategy == QuantizationStrategy.BLOCK:\n"
-                "            return TritonMoeQuantInfo(\n"
-                "                w13_weight=layer.w13_weight,\n"
-                "                w2_weight=layer.w2_weight,\n"
-                "                use_fp8_w8a8=True,\n"
-                "                w13_scale=layer.w13_weight_scale,\n"
-                "                w2_scale=layer.w2_weight_scale,\n"
-                "                a13_scale=layer.w13_input_scale,\n"
-                "                a2_scale=layer.w2_input_scale,\n"
-                "                block_shape=self.weight_block_size,\n"
-                "            )\n"
-                "        else:\n"
-                "            return TritonMoeQuantInfo(\n"
-                "                w13_weight=layer.w13_weight,\n"
-                "                w2_weight=layer.w2_weight,\n"
-                "                use_fp8_w8a8=True,\n"
-                "                per_channel_quant=self.weight_quant.strategy == QuantizationStrategy.CHANNEL,\n"
-                "                w13_scale=layer.w13_weight_scale,\n"
-                "                w2_scale=layer.w2_weight_scale,\n"
-                "                a13_scale=layer.w13_input_scale,\n"
-                "                a2_scale=layer.w2_input_scale,\n"
-                "            )\n\n"
-                "    def apply_weights("
-            )
-
-            if "def get_triton_quant_info" in scheme_content:
-                print("✅ scheme on disk is already patched.", flush=True)
-            elif target_str in scheme_content:
-                scheme_content = scheme_content.replace(target_str, replacement)
-                with open(scheme_path, "w", encoding="utf-8") as f:
-                    f.write(scheme_content)
-                print("✅ Successfully patched scheme on disk.", flush=True)
-            else:
-                # SGLang formatting fallback
-                target_str_alt = (
-                    "        if (\n"
-                    "            moe_runner_backend.is_aiter()\n"
-                    "            or moe_runner_backend.is_triton()\n"
-                    "            or moe_runner_backend.is_flashinfer_trtllm()\n"
-                    "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
-                    "        ):\n"
-                    "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
-                    "        else:\n"
-                    "            # TODO(cwan): refactor other backends\n"
-                    "            pass\n"
-                    "    def apply_weights("
-                )
-                if target_str_alt in scheme_content:
-                    replacement_alt = (
-                        "        if (\n"
-                        "            moe_runner_backend.is_aiter()\n"
-                        "            or moe_runner_backend.is_triton()\n"
-                        "            or moe_runner_backend.is_flashinfer_trtllm()\n"
-                        "            or moe_runner_backend.is_flashinfer_trtllm_routed()\n"
-                        "        ):\n"
-                        "            self.runner = MoeRunner(moe_runner_backend, moe_runner_config)\n"
-                        "        else:\n"
-                        "            # TODO(cwan): refactor other backends\n"
-                        "            pass\n"
-                        "    def get_triton_quant_info(self, layer):\n"
-                        "        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo\n"
-                        "        if self.weight_quant.strategy == QuantizationStrategy.BLOCK:\n"
-                        "            return TritonMoeQuantInfo(\n"
-                        "                w13_weight=layer.w13_weight,\n"
-                        "                w2_weight=layer.w2_weight,\n"
-                        "                use_fp8_w8a8=True,\n"
-                        "                w13_scale=layer.w13_weight_scale,\n"
-                        "                w2_scale=layer.w2_weight_scale,\n"
-                        "                a13_scale=layer.w13_input_scale,\n"
-                        "                a2_scale=layer.w2_input_scale,\n"
-                        "                block_shape=self.weight_block_size,\n"
-                        "            )\n"
-                        "        else:\n"
-                        "            return TritonMoeQuantInfo(\n"
-                        "                w13_weight=layer.w13_weight,\n"
-                        "                w2_weight=layer.w2_weight,\n"
-                        "                use_fp8_w8a8=True,\n"
-                        "                per_channel_quant=self.weight_quant.strategy == QuantizationStrategy.CHANNEL,\n"
-                        "                w13_scale=layer.w13_weight_scale,\n"
-                        "                w2_scale=layer.w2_weight_scale,\n"
-                        "                a13_scale=layer.w13_input_scale,\n"
-                        "                a2_scale=layer.w2_input_scale,\n"
-                        "            )\n"
-                        "    def apply_weights("
-                    )
-                    scheme_content = scheme_content.replace(target_str_alt, replacement_alt)
-                    with open(scheme_path, "w", encoding="utf-8") as f:
-                        f.write(scheme_content)
-                    print("✅ Successfully patched scheme on disk (alternative format).", flush=True)
-                else:
-                    print("⚠️ Could not locate create_moe_runner target string in scheme.py.", flush=True)
-
-        # Apply in-memory monkeypatch
-        try:
-            from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
-            
-            def get_triton_quant_info(self, layer):
-                strategy_name = getattr(self.weight_quant.strategy, "name", str(self.weight_quant.strategy))
-                if strategy_name == "BLOCK":
-                    return TritonMoeQuantInfo(
-                        w13_weight=layer.w13_weight,
-                        w2_weight=layer.w2_weight,
-                        use_fp8_w8a8=True,
-                        w13_scale=layer.w13_weight_scale,
-                        w2_scale=layer.w2_weight_scale,
-                        a13_scale=layer.w13_input_scale,
-                        a2_scale=layer.w2_input_scale,
-                        block_shape=self.weight_block_size,
-                    )
-                else:
-                    return TritonMoeQuantInfo(
-                        w13_weight=layer.w13_weight,
-                        w2_weight=layer.w2_weight,
-                        use_fp8_w8a8=True,
-                        per_channel_quant=strategy_name == "CHANNEL",
-                        w13_scale=layer.w13_weight_scale,
-                        w2_scale=layer.w2_weight_scale,
-                        a13_scale=layer.w13_input_scale,
-                        a2_scale=layer.w2_input_scale,
-                    )
-            scheme_module.CompressedTensorsW8A8Fp8MoE.get_triton_quant_info = get_triton_quant_info
-            print("✅ In-memory monkeypatch applied to CompressedTensorsW8A8Fp8MoE.get_triton_quant_info.", flush=True)
-        except Exception as e:
-            print(f"⚠️ Could not apply in-memory patch to CompressedTensorsW8A8Fp8MoE: {e}", flush=True)
-
-    except Exception as e:
-        print(f"⚠️ Error while patching SGLang scheme: {e}", flush=True)
-
 def main():
-    patch_sglang_clippable_linear()
-    # Ensure S3 adapters are downloaded if not present locally
-    adapter_base_dir = "/app/output/adapter"
-    if not has_local_adapter(adapter_base_dir):
-        print("🔍 No local adapters found in /app/output/adapter. Checking S3...", flush=True)
-        bucket_name = os.environ.get("S3_BUCKET", "diwop-leichte-sprache")
-        s3_adapter_run = os.environ.get("S3_ADAPTER_RUN")
-        
-        if s3_adapter_run:
-            print(f"📦 $S3_ADAPTER_RUN specified: {s3_adapter_run}", flush=True)
-            prefix = s3_adapter_run
-        else:
-            print("📦 $S3_ADAPTER_RUN not specified. Listing S3 bucket to find the newest run...", flush=True)
-            try:
-                prefix = get_newest_run_prefix(bucket_name)
-                print(f"✨ Identified newest run: {prefix}", flush=True)
-            except Exception as e:
-                print(f"❌ Error identifying newest run: {e}", flush=True)
-                prefix = None
-                
-        if prefix:
-            if not prefix.endswith("/"):
-                prefix += "/"
-            try:
-                download_s3_folder(bucket_name, prefix, adapter_base_dir)
-                print("✅ S3 download completed successfully!", flush=True)
-            except Exception as e:
-                print(f"❌ Error downloading adapter from S3: {e}", flush=True)
-        else:
-            print("⚠️ Skipping S3 download as no run could be identified.", flush=True)
-    else:
-        print("✅ Local adapter already present in /app/output/adapter. Skipping S3 download.", flush=True)
+    # 1. APPLY PATCHES
+    patch_sglang_gemma4_mm()
+    patch_sglang_gemma4_causal()
+    patch_sglang_lora_mem_pool()
+    patch_sglang_lora_manager()
+    patch_sglang_compressed_tensors_moe()
 
-    print("📋 Validating structural configurations...", flush=True)
-    if not os.path.exists("data/system-prompt.md") or not os.path.exists("data/prompt-template.md"):
-        raise FileNotFoundError("❌ Pipeline Failure: Configuration blueprint files are missing.")
-
+    # 2. LOAD CONFIGS
     with open("data/system-prompt.md", "r", encoding="utf-8") as f:
         global_system_prompt = f.read().strip()
     with open("data/prompt-template.md", "r", encoding="utf-8") as f:
         global_template = f.read()
 
     evaluation_set = []
-    
-    # PART 1: APPEND INTEGRITY CHECK PROMPT
+    # Integrity check
     evaluation_set.append({
         "is_integrity": True,
         "original_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
@@ -669,50 +401,16 @@ def main():
         "reference_text": None
     })
     
-    # PART 2: APPEND REGULAR UNTAGGED TEST PROMPTS
-    original_test_prompts = [
-        "Warum ist der Himmel blau und nicht schwarz?",
-        "Was ist die Quadratwurzel aus 16?",
-        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg...",
-        "Guten Tag! Wie geht es Ihnen?",
-        "Herr Müller, beim letzten Mal haben wir über Bluthochdruck gesprochen. Erinnern sie sich noch, was das bedeutet?",
-        "Das hier sind Ihre Blutdruckwerte aus der letzten Woche. Da können Sie sehen, dass der Blutdruck immer noch zu hoch ist. Sie sollten versuchen, Ihren Blutdruck zu senken. Das können Sie tun, indem Sie weniger Salz essen und mehr Sport treiben. Ansonsten können Sie auch einen Blutdrucksenker einnehmen. Aber erstmal sollten wir es mit den Anpassungen bei Ihrem Lebensstil versuchen. Haben Sie dazu Fragen?",
-        "Haben Sie noch eine angenehme Woche. Bis zum nächsten Mal!",
-        "Die Quantenchromodynamik (kurz QCD) ist eine Quantenfeldtheorie zur Beschreibung der starken Wechselwirkung. Sie beschreibt die Wechselwirkung von Quarks und Gluonen, also der fundamentalen Bausteine der Atomkerne.\nDie QCD ist wie die Quantenelektrodynamik (QED) eine Eichtheorie. Während die QED jedoch auf der abelschen Eichgruppe U(1) beruht und die Wechselwirkung elektrisch geladener Teilchen (z. B. Elektron oder Positron) mit Photonen beschreibt, wobei die Photonen selbst ungeladen sind, ist die Eichgruppe der QCD, die SU(3), nicht-abelsch. Es handelt sich also um eine Yang-Mills-Theorie. Die Wechselwirkungsteilchen der QCD sind die Gluonen, und an die Stelle der elektrischen Ladung als Erhaltungsgröße tritt die Farbladung (daher der Name Chromodynamik). Die Gluonen selbst sind im Gegensatz zu den Eichteilchen der QED „geladen“, das heißt Träger von Farbladungen, und wechselwirken auch untereinander.",
-        "# Lachs im Sesammantel auf Erbsenpüree und Zuckerschotenstroh\nZutaten Für 4 Portionen:\n* 4 Lachssteak(s) küchenfertig, à 140 g\n* 4 EL Sesam geröstet, weiß und schwarz\n* 2 EL Öl (Woköl mit Sesamaroma)\n* 2 EL Butter\n* 2 Schalotte(n)\n* 400 g Erbsen, TK\n* 2 EL Sahne\n* Salz und Pfeffer\n* Muskat\n* Zucker\n* 100 g Zuckerschote(n)\n* 1 EL Butter\n* Erbsensprossen (Erbsenspargelsprossen) für die Dekoration\nGesamtzeit: 35 Min.\nArbeitszeit: 25 Min.\nKoch-/Backzeit: 10 Min.\n1. Die Schalotten abziehen und in Würfel schneiden. Diese in einem Topf mit der Butter angehen lassen, die aufgetauten Erbsen zufügen. Etwas angehen lassen und mit Salz, Pfeffer, Zucker und Muskat würzen. Sahne zufügen, ca. fünf Minuten dünsten und danach im Mixer sehr fein pürieren.\n2. Den Lachs im Sesam wenden und in einer Pfanne mit dem Öl bei mittlerer Hitze von beiden Seiten je zwei Minuten braten und anschließend zwei Minuten ruhen lassen. Mit Salz und Pfeffer würzen.\n3. Die Zuckerschoten in dünne Streifen schneiden und in Butter glacieren. Mit Salz, Muskat und etwas Zucker würzen.\n4. Anrichten: Das Püree auf einem tiefen Teller anrichten, den aufgeschnittenen Lachs darauf setzen und von den glacierten Schoten einen Löffel dararauf verteilen. Mit Erbsspargelsprossen dekorieren.\n5. Guten Appetit!",
-        "The Creation of the World\nIn the beginning, God created the heavens and the earth. The earth was without form and void, and darkness was over the face of the deep. And the Spirit of God was hovering over the face of the waters.\nAnd God said, “Let there be light,” and there was light. And God saw that the light was good. And God separated the light from the darkness. God called the light Day, and the darkness he called Night. And there was evening and there was morning, the first day.",
-        "Remigration (von lateinisch remigrare „zurückwandern“, „zurückkehren“), auch Rückwanderung oder Rückkehrmigration, bezeichnet den Teil eines Migrationsprozesses, bei dem Menschen nach einer beträchtlichen Zeitspanne in einem anderen Land oder einer anderen Region in ihr Herkunftsland oder ihre Herkunftsregion zurückkehren. Remigration findet in umgekehrter Richtung zur vorangegangenen Migration statt. Der Begriff wurde von der Neuen Rechten als Kampfbegriff und Euphemismus für Vertreibung und Deportation etabliert. Eine Jury wählte ihn zum „Unwort des Jahres 2023“ in Deutschland.",
-        "Unsere einst stolzen Städte verwahrlosen immer mehr und sind Brutstätten von Kriminalität und Gewalt und leider oftmals Heimstätte von radikalen Islamisten. Unser einst fruchtbares Land verliert seine Bewohner, verödet aufgrund einer desaströsen und völlig falsch angelegten Strukturpolitik. Unsere einst schöne Heimat wird zusehends durch hässliche Bauten, Windräder und eine chaotische Besiedlung verunstaltet. Unsere einst kraftvolle Wirtschaft ist nur noch ein Wrack, neoliberal ausgezehrt. Unser einst beneideter, unser einst weltweit beneideter sozialer Friede ist durch den steigenden Missbrauch und die Aufgabe der national begrenzten Solidargemeinschaft sowie durch den Import fremder Völkerschaften und die zwangsläufigen Konflikte existenziell gefährdet. Liebe Freunde, und unser liebes Volk ist im inneren tief gespalten und durch den Geburtenrückgang sowie die Masseneinwanderung, erstmals in seiner Existenz tatsächlich elementar bedroht.",
-        "Macht was ihr wollt, aber schreibt nicht \"Wir sind das Volk!\" Ihr seid nicht das Volk, ihr seid der verblendete, verblödete, braune Bodensatz des Volkes. Ihr seid der widerliche, nervende kleine Pickel am Arsch der Gesellschaft, aber sicherlich nicht das Volk!",
-        "Inzwischen könnte ich beidem Wort \"bunt\" nur noch kotzen. Solange wirklich Fachkräfte kommen, hat ja kein Mensch was dagegen. Auch die Spanier und Italiener, die hier ihre Ausbildung machen, sind doch willkommen. Dieses Getue in den Medien geht mir tierisch auf den Senkel. Und sie wissen immer noch nicht (oder wollen es nicht wissen) worum es uns geht.",
-        "Diese Pisser!!! völliger Quatsch, welche Partei mit den Grünen oder Linken sympathisiert kann nichts gutes für das deutsche Volk wollen ebenso wie die komischen Christlichen.",
-        "Ja die DDR lässt überall grüßen, ich wundere mich auch jeden Tag. Zensur, Einheitsmeinung, Volksentscheid unerwünscht. Propaganda-Medien. und eine durchgeknallte Staatsratsvorsitzende....",
-        "die sollten sich von den skandinavischen gruppenvergewaltigungsopfern tips geben lassen,wie man das blut aus den klamotten bekommt! eigentlich traurig,dass man solche beispiele bringen muss! linda aus oslo ist ein schlimmesbld u läßt nur ansatzweise erahnen,was sie durchgemacht haben muss...",
-        "Die verdammten Drecksvölker,und Deutschland will sich das Dreckspack ins Land holen!"
-    ]
-    
-    for text_block in original_test_prompts:
-        evaluation_set.append({
-            "is_integrity": False,
-            "original_user": text_block,
-            "templated_user": global_template.replace("%INPUT%", text_block),
-            "system": global_system_prompt,
-            "reference_text": None
-        })
-
-    # PART 3: INGEST ADAPTER DATASET FROM JSONL
+    # Dataset records
     jsonl_path = "data/train/dataset.jsonl"
     if os.path.exists(jsonl_path):
-        print(f"📥 Parsing tuning records from: {jsonl_path}")
         with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line_number, line in enumerate(f, 1):
+            for line in f:
                 if not line.strip(): continue
                 entry = json.loads(line)
                 prompt_id = str(entry.get("id", "")).strip()
-                # 
                 orig_content = read_file_with_extensions(f"data/raw/{prompt_id}_Standardsprache")
                 ref_content = read_file_with_extensions(f"data/raw/{prompt_id}_Leichte_Sprache")
-                # 
                 evaluation_set.append({
                     "is_integrity": False,
                     "original_user": orig_content,
@@ -721,7 +419,10 @@ def main():
                     "reference_text": ref_content
                 })
 
-    # --- DYNAMIC ADAPTER CHECKPOINT RESOLUTION ---
+    # LIMIT FOR VERIFICATION
+    evaluation_set = evaluation_set[:8]
+
+    # 3. CONFIGURE PIPELINE
     mistral_adapter = "/app/output/adapter/mistral4small"
     if not os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
         mistral_adapter = "/app/output/adapter/train-mistral4small"
@@ -729,48 +430,32 @@ def main():
     gemma_adapter = "/app/output/adapter/gemma4"
     if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         gemma_adapter = "/app/output/adapter/train-gemma4"
+
     EVALUATION_PIPELINE = []
     
-    # LIMITING FOR FAST VERIFICATION
-    # evaluation_set = evaluation_set[:8]
-    # (Actually we want to keep the integrity check and 7 prompts)
-    evaluation_set = evaluation_set[:8]
+    # Model 1: Gemma Plain
+    base_gemma = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, "Gemma 4 (Plain)", None))
     
-    base_model_id = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
+    # Model 2: Gemma Reasoning
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, "Gemma 4 (Reasoning)", "gemma4"))
     
-    # Variant 1: Plain Gemma (No reasoning parser)
-    EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Plain)", None))
-    
-    # Variant 2 and 3 disabled for rapid verification
-    """
-    # Variant 2: Gemma with Reasoning (With reasoning parser)
-    EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Reasoning)", "gemma4"))
-    
-    # Gemma strategy: Check for merged FP8 model first (Production path)
-    merged_gemma_fp8 = "/app/output/merged/train-gemma4-fp8"
-    if not os.path.exists(merged_gemma_fp8):
-        print(f"🔍 Merged model missing at {merged_gemma_fp8}. Checking S3 storage...", flush=True)
-        bucket_name = os.environ.get("S3_BUCKET", "diwop-leichte-sprache")
-        s3_model_prefix = "models/train-gemma4-fp8/"
-        try:
-            # We use download_s3_folder directly as the model path is known
-            download_s3_folder(bucket_name, s3_model_prefix, merged_gemma_fp8)
-            print("✅ Merged model successfully downloaded from S3!", flush=True)
-        except Exception as e:
-            print(f"⚠️ Could not download merged model from S3: {e}", flush=True)
-
-    if os.path.exists(merged_gemma_fp8):
-        print(f"🌟 Found merged production model: {merged_gemma_fp8}. Using native FP8 execution.", flush=True)
-        EVALUATION_PIPELINE.append((merged_gemma_fp8, None, 8192, None, "Gemma 4 (Fine-tuned + Reasoning)", "gemma4"))
+    # Model 3: Gemma Fine-tuned
+    merged_gemma = "/app/output/merged/train-gemma4-fp8"
+    if os.path.exists(merged_gemma):
+        EVALUATION_PIPELINE.append((merged_gemma, None, 8192, None, "Gemma 4 (Fine-tuned)", "gemma4"))
     elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        print(f"🧬 No merged model found. Falling back to adapter execution for fine-tuned variant: {gemma_adapter}", flush=True)
-        EVALUATION_PIPELINE.append((base_model_id, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned + Reasoning)", "gemma4"))
-    else:
-        print("⚠️ Warning: Fine-tuned variant requested but neither merged model nor adapter found. Skipping Variant 3.", flush=True)
-    """
+        EVALUATION_PIPELINE.append((base_gemma, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned)", "gemma4"))
 
-    # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
+    # Model 4: Mistral Plain
+    # base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+    # EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, "Mistral 119B (Plain)", None))
     
+    # Model 5: Mistral Fine-tuned
+    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, mistral_adapter, "Mistral 119B (Fine-tuned)", None))
+
+    # 4. EXECUTE PIPELINE
     output_json = {
         "system": global_system_prompt,
         "template": global_template,
@@ -778,66 +463,38 @@ def main():
         "prompts": []
     }
     
-    # Pre-populate matrix rows with uniform 4-element columns [Text, FRE, WSTF, Reasoning]
     for item in evaluation_set:
-        record = {}
-        if item["is_integrity"]:
-            record["system"] = item["system"]
-            record["template"] = ""
-            
         input_fre, input_wstf = get_raw_metrics(item["original_user"])
-        record["r"] = [[item["original_user"], input_fre, input_wstf, ""]]
-        output_json["prompts"].append(record)
+        output_json["prompts"].append({"r": [[item["original_user"], input_fre, input_wstf, ""]]})
 
-    # Cascade Batch Inference through registered models
-    for model_id, quant_type, max_len, adapter_id, display_name, reasoning_parser in EVALUATION_PIPELINE:
+    for model_id, quant_type, max_len, adapter_id, display_name, parser in EVALUATION_PIPELINE:
         output_json["models"].append(display_name)
+        responses = run_evaluation(model_id, quant_type, max_len, adapter_id, evaluation_set, reasoning_parser=parser)
         
-        active_adapter_id = adapter_id
-        if adapter_id and "gemma" in model_id.lower():
-            print(f"⚙️ Intercepted Gemma model with active adapter. Preprocessing: {adapter_id}", flush=True)
-            active_adapter_id = preprocess_adapter(adapter_id)
-            
-        responses = run_evaluation(model_id, quant_type, max_len, active_adapter_id, evaluation_set, reasoning_parser=reasoning_parser)
-        
-        for idx, (text_response, reasoning_trace) in enumerate(responses):
-            resp_fre, resp_wstf = get_raw_metrics(text_response)
-            output_json["prompts"][idx]["r"].append([text_response, resp_fre, resp_wstf, reasoning_trace])
+        for idx, (text, trace) in enumerate(responses):
+            fre, wstf = get_raw_metrics(text)
+            output_json["prompts"][idx]["r"].append([text, fre, wstf, trace])
 
-        # CHECKPOINT SAVE AFTER EACH MODEL
-        checkpoint_filename = f"evaluation/checkpoint_{display_name.replace(' ', '_')}.json"
+        # Save checkpoint
         os.makedirs("evaluation", exist_ok=True)
-        with open(checkpoint_filename, "w", encoding="utf-8") as f:
+        cp_file = f"evaluation/checkpoint_{display_name.replace(' ', '_')}.json"
+        with open(cp_file, "w", encoding="utf-8") as f:
             json.dump(output_json, f, ensure_ascii=False, indent=2)
-        print(f"💾 Checkpoint saved for {display_name}: {checkpoint_filename}", flush=True)
+        print(f"💾 Checkpoint saved: {cp_file}")
 
-    # POST-PROCESSING: Append tuning ground truth references
-    print("\n📝 Appending ground-truth training references to dataset records...", flush=True)
-    for idx, item in enumerate(evaluation_set):
-        if item["reference_text"] is not None:
-            ref_txt = item["reference_text"]
-            ref_fre, ref_wstf = get_raw_metrics(ref_txt)
-            output_json["prompts"][idx]["r"].append([ref_txt, ref_fre, ref_wstf, ""])
-
-    # Output Serialization and S3 Upload
+    # 5. FINAL EXPORT
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     filename = f"evaluation/{timestamp}_evaluation.json"
-    bucket_name = os.environ.get("S3_BUCKET")
+    bucket = os.environ.get("S3_BUCKET", "diwop-leichte-sprache")
     json_payload = json.dumps(output_json, ensure_ascii=False, indent=2)
     
-    print("\n" + "="*60 + "\n🏁 EVALUATION MATRIX EXPORT\n" + "="*60)
-    if bucket_name:
-        print(f"📤 Exporting matrix results to S3 Bucket: {bucket_name} as {filename}...")
-        try:
-            s3_client = boto3.client('s3')
-            s3_client.put_object(Bucket=bucket_name, Key=filename, Body=json_payload, ContentType='application/json')
-            print("🚀 S3 Synchronization successful!")
-        except Exception as s3_err:
-            print(f"❌ Failed to transfer to S3 destination: {s3_err}\nSaving local copy as fallback...")
-            with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
-    else:
+    try:
+        s3 = boto3.client('s3')
+        s3.put_object(Bucket=bucket, Key=filename, Body=json_payload, ContentType='application/json')
+        print(f"🚀 S3 Export successful: {filename}")
+    except Exception as e:
+        print(f"❌ S3 Error: {e}")
         with open(filename, "w", encoding="utf-8") as f: f.write(json_payload)
-        print(f"💾 Written to local file system: {filename}")
 
 if __name__ == "__main__":
     main()
