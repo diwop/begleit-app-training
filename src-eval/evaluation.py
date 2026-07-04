@@ -33,13 +33,13 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
         f"with extensions {extensions}."
     )
 
-def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
+def run_evaluation(model_id, quantization_type, max_len, adapter_id, evaluation_set, reasoning_parser=None):
     """
-    Initializes the engine, handles conditional FP8 and architecture properties,
-    and processes conversations through the safe native parallel llm.chat backend.
+    Launches a dedicated SGLang Engine for the specific model/adapter pair,
+    executes batch inference, and returns cleaned (text, reasoning) tuples.
     """
-    if evaluation_set is None:
-        evaluation_set = []
+    is_gemma = "gemma" in model_id.lower()
+    generated_responses = []
         
     print("\n" + "="*60)
     print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {model_id}")
@@ -81,6 +81,7 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
             "tp_size": available_gpus,
             "context_length": max_len,
             "trust_remote_code": True,
+            "reasoning_parser": reasoning_parser,
         }
         
         if quantization_type:
@@ -736,18 +737,35 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
     EVALUATION_PIPELINE = []
     
+    base_model_id = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
+    
+    # Variant 1: Plain Gemma (No reasoning parser)
+    EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Plain)", None))
+    
+    # Variant 2: Gemma with Reasoning (With reasoning parser)
+    EVALUATION_PIPELINE.append((base_model_id, None, 8192, None, "Gemma 4 (Reasoning)", "gemma4"))
+    
     # Gemma strategy: Check for merged FP8 model first (Production path)
     merged_gemma_fp8 = "/app/output/merged/train-gemma4-fp8"
+    if not os.path.exists(merged_gemma_fp8):
+        print(f"🔍 Merged model missing at {merged_gemma_fp8}. Checking S3 storage...", flush=True)
+        bucket_name = os.environ.get("S3_BUCKET", "diwop-leichte-sprache")
+        s3_model_prefix = "models/train-gemma4-fp8/"
+        try:
+            # We use download_s3_folder directly as the model path is known
+            download_s3_folder(bucket_name, s3_model_prefix, merged_gemma_fp8)
+            print("✅ Merged model successfully downloaded from S3!", flush=True)
+        except Exception as e:
+            print(f"⚠️ Could not download merged model from S3: {e}", flush=True)
+
     if os.path.exists(merged_gemma_fp8):
         print(f"🌟 Found merged production model: {merged_gemma_fp8}. Using native FP8 execution.", flush=True)
-        EVALUATION_PIPELINE.append((merged_gemma_fp8, None, 8192, None))
+        EVALUATION_PIPELINE.append((merged_gemma_fp8, None, 8192, None, "Gemma 4 (Fine-tuned + Reasoning)", "gemma4"))
     elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        # Fallback to adapter path (Legacy/Debug path)
-        print(f"🧬 No merged model found. Falling back to adapter execution: {gemma_adapter}", flush=True)
-        EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, gemma_adapter))
+        print(f"🧬 No merged model found. Falling back to adapter execution for fine-tuned variant: {gemma_adapter}", flush=True)
+        EVALUATION_PIPELINE.append((base_model_id, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned + Reasoning)", "gemma4"))
     else:
-        # Base model only
-        EVALUATION_PIPELINE.append(("RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic", None, 8192, None))
+        print("⚠️ Warning: Fine-tuned variant requested but neither merged model nor adapter found. Skipping Variant 3.", flush=True)
 
     # EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
     
@@ -770,9 +788,7 @@ def main():
         output_json["prompts"].append(record)
 
     # Cascade Batch Inference through registered models
-    for model_id, quant_type, max_len, adapter_id in EVALUATION_PIPELINE:
-        display_name = model_id
-        if adapter_id: display_name += f" ({adapter_id})"
+    for model_id, quant_type, max_len, adapter_id, display_name, reasoning_parser in EVALUATION_PIPELINE:
         output_json["models"].append(display_name)
         
         active_adapter_id = adapter_id
@@ -780,7 +796,7 @@ def main():
             print(f"⚙️ Intercepted Gemma model with active adapter. Preprocessing: {adapter_id}", flush=True)
             active_adapter_id = preprocess_adapter(adapter_id)
             
-        responses = run_evaluation(model_id, quant_type, max_len, active_adapter_id, evaluation_set)
+        responses = run_evaluation(model_id, quant_type, max_len, active_adapter_id, evaluation_set, reasoning_parser=reasoning_parser)
         
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)

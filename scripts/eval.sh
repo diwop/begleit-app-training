@@ -6,7 +6,7 @@ cd /runner/repo/
 LOG_FILE="/app/evaluation_run.log"
 
 echo "Installing evaluation dependencies..."
-uv pip install --system --break-system-packages textstat
+uv pip install --system --break-system-packages textstat boto3
 
 echo "Running evaluation script..."
 set +e
