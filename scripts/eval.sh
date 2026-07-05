@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 LOG_FILE="/app/evaluation_run.log"
 
 echo "Installing evaluation dependencies..."
-uv pip install --system --break-system-packages textstat boto3
+uv pip install --system --break-system-packages textstat boto3 "dvc[s3]"
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
@@ -15,6 +15,9 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export HF_HOME=${HF_HOME:-/app/huggingface_cache}
+
+echo "Pulling dataset from DVC..."
+python3 -m dvc pull
 
 echo "Running evaluation script..."
 set +e
