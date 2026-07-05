@@ -471,6 +471,7 @@ def main():
 
     # LIMIT FOR VERIFICATION
     evaluation_set = evaluation_set[:8]
+    print(f"📊 Evaluation set size: {len(evaluation_set)} prompts", flush=True)
 
     # 3. CONFIGURE PIPELINE
     mistral_adapter = "/app/output/adapter/mistral4small"
@@ -518,14 +519,14 @@ def main():
         output_json["prompts"].append({"r": [[item["original_user"], input_fre, input_wstf, ""]]})
 
     for model_id, quant_type, max_len, adapter_id, display_name, parser in EVALUATION_PIPELINE:
-        print("\n" + "="*60)
-        print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {display_name}")
-        print("="*60)
+        print("\n" + "="*60, flush=True)
+        print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {display_name}", flush=True)
+        print("="*60, flush=True)
         
         import time
         start_eval = time.time()
         start_str = time.strftime('%H:%M:%S', time.localtime(start_eval))
-        print(f"⏰ Start Time: {start_str}")
+        print(f"⏰ Start Time: {start_str}", flush=True)
 
         output_json["models"].append(display_name)
         responses = run_evaluation(
@@ -541,9 +542,9 @@ def main():
         end_eval = time.time()
         end_str = time.strftime('%H:%M:%S', time.localtime(end_eval))
         duration = end_eval - start_eval
-        print(f"✅ Finished: {display_name}")
-        print(f"⏰ End Time: {end_str}")
-        print(f"⏱️ Elapsed: {duration:.2f}s ({duration/60:.2f} min)")
+        print(f"✅ Finished: {display_name}", flush=True)
+        print(f"⏰ End Time: {end_str}", flush=True)
+        print(f"⏱️ Elapsed: {duration:.2f}s ({duration/60:.2f} min)", flush=True)
         
         for idx, (text, trace) in enumerate(responses):
             fre, wstf = get_raw_metrics(text)
