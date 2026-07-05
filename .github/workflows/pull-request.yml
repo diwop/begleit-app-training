@@ -65,8 +65,11 @@ jobs:
             --user root \
             --entrypoint bash \
             $BASE_IMAGE -c "
+            echo 'Installing uv...'
+            pip install uv
+            
             echo 'Compiling utility and data prep blueprints...'
-            uv pip install --no-cache src-train/
+            uv pip install --system --no-cache src-train/
             
             echo 'Executing Version Integrity Smoke Test...'
             python tests/container_smoke_test.py
@@ -97,7 +100,7 @@ jobs:
             --entrypoint bash \
             $BASE_IMAGE -c "
             echo 'Installing evaluation dependencies...'
-            pip install --no-cache-dir textstat boto3
+            pip install --no-cache-dir textstat boto3 vllm
             
             echo 'Executing vLLM Version Integrity Smoke Test...'
             python tests/eval_container_smoke_test.py
