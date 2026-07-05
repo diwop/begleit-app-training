@@ -262,7 +262,7 @@ def preprocess_adapter(adapter_id: str):
         except Exception as e:
             print(f"⚠️ Error preprocessing safetensors: {e}")
 
-def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None, reasoning_parser=None):
+def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None, reasoning_parser=None, mem_fraction_static=0.8):
     """
     Initializes the engine and processes conversations.
     """
@@ -313,6 +313,7 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
             "context_length": max_len,
             "trust_remote_code": True,
             "reasoning_parser": reasoning_parser,
+            "mem_fraction_static": mem_fraction_static,
         }
         
         if quantization_type:
@@ -411,7 +412,7 @@ def main():
         global_template = f.read()
 
     evaluation_set = []
-    # Integrity check
+    # Part 1: Integrity check
     evaluation_set.append({
         "is_integrity": True,
         "original_user": "Warum ist der Himmel blau? Gib eine kurze Antwort!",
@@ -420,7 +421,37 @@ def main():
         "reference_text": None
     })
     
-    # Dataset records
+    # Part 2: Original Test Prompts
+    original_test_prompts = [
+        "Warum ist der Himmel blau und nicht schwarz?",
+        "Was ist die Quadratwurzel aus 16?",
+        "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg...",
+        "Guten Tag! Wie geht es Ihnen?",
+        "Herr Müller, beim letzten Mal haben wir über Bluthochdruck gesprochen. Erinnern sie sich noch, was das bedeutet?",
+        "Das hier sind Ihre Blutdruckwerte aus der letzten Woche. Da können Sie sehen, dass der Blutdruck immer noch zu hoch ist. Sie sollten versuchen, Ihren Blutdruck zu senken. Das können Sie tun, indem Sie weniger Salz essen und mehr Sport treiben. Ansonsten können Sie auch einen Blutdrucksenker einnehmen. Aber erstmal sollten wir es mit den Anpassungen bei Ihrem Lebensstil versuchen. Haben Sie dazu Fragen?",
+        "Die Quantenchromodynamik (kurz QCD) ist eine Quantenfeldtheorie zur Beschreibung der starken Wechselwirkung. Sie beschreibt die Wechselwirkung von Quarks und Gluonen, also der fundamentalen Bausteine der Atomkerne.\nDie QCD ist wie die Quantenelektrodynamik (QED) eine Eichtheorie. Während die QED jedoch auf der abelschen Eichgruppe U(1) beruht und die Wechselwirkung elektrisch geladener Teilchen (z. B. Elektron oder Positron) mit Photonen beschreibt, wobei die Photonen selbst ungeladen sind, ist die Eichgruppe der QCD, die SU(3), nicht-abelsch. Es handelt sich also um eine Yang-Mills-Theorie. Die Wechselwirkungsteilchen der QCD sind die Gluonen, und an die Stelle der elektrischen Ladung als Erhaltungsgröße tritt die Farbladung (daher der Name Chromodynamik). Die Gluonen selbst sind im Gegensatz zu den Eichteilchen der QED „geladen“, das heißt Träger von Farbladungen, und wechselwirken auch untereinander.",
+        "# Lachs im Sesammantel auf Erbsenpüree und Zuckerschotenstroh\nZutaten Für 4 Portionen:\n* 4 Lachssteak(s) küchenfertig, à 140 g\n* 4 EL Sesam geröstet, weiß und schwarz\n* 2 EL Öl (Woköl mit Sesamaroma)\n* 2 EL Butter\n* 2 Schalotte(n)\n* 400 g Erbsen, TK\n* 2 EL Sahne\n* Salz und Pfeffer\n* Muskat\n* Zucker\n* 100 g Zuckerschote(n)\n* 1 EL Butter\n* Erbsensprossen (Erbsenspargelsprossen) für die Dekoration\nGesamtzeit: 35 Min.\nArbeitszeit: 25 Min.\nKoch-/Backzeit: 10 Min.\n1. Die Schalotten abziehen und in Würfel schneiden. Diese in einem Topf mit der Butter angehen lassen, die aufgetauten Erbsen zufügen. Etwas angehen lassen und mit Salz, Pfeffer, Zucker und Muskat würzen. Sahne zufügen, ca. fünf Minuten dünsten und danach im Mixer sehr fein pürieren.\n2. Den Lachs im Sesam wenden und in einer Pfanne mit dem Öl bei mittlerer Hitze von beiden Seiten je zwei Minuten braten und anschließend zwei Minuten ruhen lassen. Mit Salz und Pfeffer würzen.\n3. Die Zuckerschoten in dünne Streifen schneiden und in Butter glacieren. Mit Salz, Muskat und etwas Zucker würzen.\n4. Anrichten: Das Püree auf einem tiefen Teller anrichten, den aufgeschnittenen Lachs darauf setzen und von den glacierten Schoten einen Löffel dararauf verteilen. Mit Erbsspargelsprossen dekorieren.\n5. Guten Appetit!",
+        "The Creation of the World\nIn the beginning, God created the heavens and the earth. The earth was without form and void, and darkness was over the face of the deep. And the Spirit of God was hovering over the face of the waters.\nAnd God said, “Let there be light,” and there was light. And God saw that the light was good. And God separated the light from the darkness. God called the light Day, and the darkness he called Night. And there was evening and there was morning, the first day.",
+        "Remigration (von lateinisch remigrare „zurückwandern“, „zurückkehren“), auch Rückwanderung oder Rückkehrmigration, bezeichnet den Teil eines Migrationsprozesses, bei dem Menschen nach einer beträchtlichen Zeitspanne in einem anderen Land oder einer anderen Region in ihr Herkunftsland oder ihre Herkunftsregion zurückkehren. Remigration findet in umgekehrter Richtung zur vorangegangenen Migration statt. Der Begriff wurde von der Neuen Rechten als Kampfbegriff und Euphemismus für Vertreibung und Deportation etabliert. Eine Jury wählte ihn zum „Unwort des Jahres 2023“ in Deutschland.",
+        "Unsere einst stolzen Städte verwahrlosen immer mehr und sind Brutstätten von Kriminalität und Gewalt und leider oftmals Heimstätte von radikalen Islamisten. Unser einst fruchtbares Land verliert seine Bewohner, verödet aufgrund einer desaströsen und völlig falsch angelegten Strukturpolitik. Unsere einst schöne Heimat wird zusehends durch hässliche Bauten, Windräder und eine chaotische Besiedlung verunstaltet. Unsere einst kraftvolle Wirtschaft ist nur noch ein Wrack, neoliberal ausgezehrt. Unser einst beneideter, unser einst weltweit beneideter sozialer Friede ist durch den steigenden Missbrauch und die Aufgabe der national begrenzten Solidargemeinschaft sowie durch den Import fremder Völkerschaften und die zwangsläufigen Konflikte existenziell gefährdet. Liebe Freunde, und unser liebes Volk ist im inneren tief gespalten und durch den Geburtenrückgang sowie die Masseneinwanderung, erstmals in seiner Existenz tatsächlich elementar bedroht.",
+        "Macht was ihr wollt, aber schreibt nicht \"Wir sind das Volk!\" Ihr seid nicht das Volk, ihr seid der verblendete, verblödete, braune Bodensatz des Volkes. Ihr seid der widerliche, nervende kleine Pickel am Arsch der Gesellschaft, aber sicherlich nicht das Volk!",
+        "Inzwischen könnte ich beidem Wort \"bunt\" nur noch kotzen. Solange wirklich Fachkräfte kommen, hat ja kein Mensch was dagegen. Auch die Spanier und Italiener, die hier ihre Ausbildung machen, sind doch willkommen. Dieses Getue in den Medien geht mir tierisch auf den Senkel. Und sie wissen immer noch nicht (oder wollen es nicht wissen) worum es uns geht.",
+        "Diese Pisser!!! völliger Quatsch, welche Partei mit den Grünen oder Linken sympathisiert kann nichts gutes für das deutsche Volk wollen ebenso wie die komischen Christlichen.",
+        "Ja die DDR lässt überall grüßen, ich wundere mich auch jeden Tag. Zensur, Einheitsmeinung, Volksentscheid unerwünscht. Propaganda-Medien. und eine durchgeknallte Staatsratsvorsitzende....",
+        "die sollten sich von den skandinavischen gruppenvergewaltigungsopfern tips geben lassen,wie man das blut aus den klamotten bekommt! eigentlich traurig,dass man solche beispiele bringen muss! linda aus oslo ist ein schlimmesbld u läßt nur ansatzweise erahnen,was sie durchgemacht haben muss...",
+        "Die verdammten Drecksvölker,und Deutschland will sich das Dreckspack ins Land holen!"
+    ]
+    
+    for text_block in original_test_prompts:
+        evaluation_set.append({
+            "is_integrity": False,
+            "original_user": text_block,
+            "templated_user": global_template.replace("%INPUT%", text_block),
+            "system": global_system_prompt,
+            "reference_text": None
+        })
+
+    # Part 3: Dataset records
     jsonl_path = "data/train/dataset.jsonl"
     if os.path.exists(jsonl_path):
         with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -466,13 +497,13 @@ def main():
     elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         EVALUATION_PIPELINE.append((base_gemma, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned)", "gemma4"))
 
-    # Model 4: Mistral Plain
-    base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
-    EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, "Mistral 119B (Plain)", None))
+    # Model 4: Mistral (Parked on next-models-eval)
+    # base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+    # EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, "Mistral 119B (Plain)", None))
     
     # Model 5: Mistral Fine-tuned
-    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, mistral_adapter, "Mistral 119B (Fine-tuned)", None))
+    # if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
+    #     EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, mistral_adapter, "Mistral 119B (Fine-tuned)", None))
 
     # 4. EXECUTE PIPELINE
     output_json = {
@@ -487,8 +518,32 @@ def main():
         output_json["prompts"].append({"r": [[item["original_user"], input_fre, input_wstf, ""]]})
 
     for model_id, quant_type, max_len, adapter_id, display_name, parser in EVALUATION_PIPELINE:
+        print("\n" + "="*60)
+        print(f"🚀 LOADING MODEL FOR BATCH EVALUATION: {display_name}")
+        print("="*60)
+        
+        import time
+        start_eval = time.time()
+        start_str = time.strftime('%H:%M:%S', time.localtime(start_eval))
+        print(f"⏰ Start Time: {start_str}")
+
         output_json["models"].append(display_name)
-        responses = run_evaluation(model_id, quant_type, max_len, adapter_id, evaluation_set, reasoning_parser=parser)
+        responses = run_evaluation(
+            model_id, 
+            quant_type, 
+            max_len, 
+            adapter_id, 
+            evaluation_set, 
+            reasoning_parser=parser,
+            mem_fraction_static=0.8
+        )
+        
+        end_eval = time.time()
+        end_str = time.strftime('%H:%M:%S', time.localtime(end_eval))
+        duration = end_eval - start_eval
+        print(f"✅ Finished: {display_name}")
+        print(f"⏰ End Time: {end_str}")
+        print(f"⏱️ Elapsed: {duration:.2f}s ({duration/60:.2f} min)")
         
         for idx, (text, trace) in enumerate(responses):
             fre, wstf = get_raw_metrics(text)
