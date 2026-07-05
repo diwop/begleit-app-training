@@ -9,9 +9,16 @@ LOG_FILE="/app/evaluation_run.log"
 echo "Installing evaluation dependencies..."
 uv pip install --system --break-system-packages textstat boto3
 
+export TP_SIZE=${TP_SIZE:-2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
+export TORCH_NCCL_BLOCKING_WAIT=1
+export HF_HOME=${HF_HOME:-/app/huggingface_cache}
+
 echo "Running evaluation script..."
 set +e
-python -u src-eval/evaluation.py 2>&1 | tee "$LOG_FILE"
+python3 -u src-eval/evaluation.py 2>&1 | tee "$LOG_FILE"
 EVAL_EXIT_CODE=${PIPESTATUS[0]}
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
