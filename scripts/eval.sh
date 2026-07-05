@@ -6,16 +6,19 @@ cd "$(dirname "$0")/.."
 
 LOG_FILE="/app/evaluation_run.log"
 
-# Create and activate a temporary virtualenv to avoid system package conflicts
-if [ ! -d "/tmp/eval-venv" ]; then
-    echo "Creating temporary virtual environment in /tmp/eval-venv..."
-    python3 -m venv /tmp/eval-venv
+# Isolate DVC in its own virtualenv to avoid system package conflicts
+if [ ! -d "/tmp/dvc-venv" ]; then
+    echo "Creating isolated DVC virtual environment in /tmp/dvc-venv..."
+    python3 -m venv /tmp/dvc-venv
+    /tmp/dvc-venv/bin/pip install --upgrade pip
+    /tmp/dvc-venv/bin/pip install "dvc[s3]>=3.50.0"
 fi
-echo "Activating /tmp/eval-venv..."
-source /tmp/eval-venv/bin/activate
 
-echo "Installing evaluation dependencies..."
-uv pip install --upgrade "textstat>=0.7.13" boto3 "dvc[s3]>=3.50.0"
+echo "Pulling dataset from DVC (isolated)..."
+/tmp/dvc-venv/bin/python3 -m dvc pull
+
+echo "Installing evaluation dependencies (system)..."
+uv pip install --system --break-system-packages --upgrade "textstat>=0.7.13" boto3
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
@@ -23,9 +26,6 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export HF_HOME=${HF_HOME:-/app/huggingface_cache}
-
-echo "Pulling dataset from DVC..."
-python3 -m dvc pull
 
 echo "Running evaluation script..."
 set +e
