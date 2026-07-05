@@ -18,7 +18,7 @@ echo "Pulling dataset from DVC (isolated)..."
 /tmp/dvc-venv/bin/python3 -m dvc pull
 
 echo "Installing evaluation dependencies (system)..."
-uv pip install --system --break-system-packages --upgrade "textstat>=0.7.13" boto3 "vllm==0.7.3"
+uv pip install --system --break-system-packages --upgrade "textstat>=0.7.13" boto3 "vllm==0.7.3" "transformers==4.45.0"
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
