@@ -32,6 +32,9 @@ For multi-GPU (2x L40S) evaluation:
 - **Background Execution**: `nohup bash scripts/eval.sh > /app/evaluation_run.log 2>&1 &`
 - **Monitoring**: `tail -f /app/evaluation_run.log`
 
-## Common Fixes
-- If `ls` or `cat` returns no output, ensure the command is wrapped in a single string and check for shell-specific quoting issues (e.g., zsh on the pod).
-- Always `mkdir -p /app` before cloning to ensure the mount point exists.
+## Critical Insights & Best Practices
+- **Persistent Sessions**: One-off commands (`ssh ... "cmd"`) often fail or ignore arguments. Always establish a persistent session (`ssh -o StrictHostKeyChecking=no -tt ...`) and use the `manage_task` tool to send input directly to the active shell.
+- **Shell Consistency**: RunPod containers often use `zsh`. Using `bash -c` or direct input ensures consistent command interpretation.
+- **Workspace Reliability**: `/app/repo` is the standard location. If `/app` doesn't exist, `mkdir -p /app` as root.
+- **Dependency Management**: Always check for `uv` (`uv --version`) before running scripts that depend on it. Fall back to `python3 -m pip` if necessary, but prioritize `uv` for speed.
+- **Output Masking**: If `cat` or `ls` returns no output in the logs, it's likely a terminal allocation issue. Use `manage_task` to read the log output from a persistent session or try `BatchMode=yes` for raw data retrieval.
