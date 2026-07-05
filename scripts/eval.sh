@@ -15,7 +15,7 @@ echo "Activating /tmp/eval-venv..."
 source /tmp/eval-venv/bin/activate
 
 echo "Installing evaluation dependencies..."
-uv pip install --upgrade textstat boto3 "dvc[s3]"
+uv pip install --upgrade "textstat>=0.7.13" boto3 "dvc[s3]>=3.50.0"
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
