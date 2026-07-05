@@ -6,8 +6,16 @@ cd "$(dirname "$0")/.."
 
 LOG_FILE="/app/evaluation_run.log"
 
+# Create and activate a temporary virtualenv to avoid system package conflicts
+if [ ! -d "/tmp/eval-venv" ]; then
+    echo "Creating temporary virtual environment in /tmp/eval-venv..."
+    python3 -m venv /tmp/eval-venv
+fi
+echo "Activating /tmp/eval-venv..."
+source /tmp/eval-venv/bin/activate
+
 echo "Installing evaluation dependencies..."
-uv pip install --system --break-system-packages --upgrade textstat boto3 "dvc[s3]"
+uv pip install --upgrade textstat boto3 "dvc[s3]"
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
