@@ -38,3 +38,6 @@ For multi-GPU (2x L40S) evaluation:
 - **Workspace Reliability**: `/app/repo` is the standard location. If `/app` doesn't exist, `mkdir -p /app` as root.
 - **Dependency Management**: Always check for `uv` (`uv --version`) before running scripts that depend on it. Fall back to `python3 -m pip` if necessary, but prioritize `uv` for speed.
 - **Output Masking**: If `cat` or `ls` returns no output in the logs, it's likely a terminal allocation issue. Use `manage_task` to read the log output from a persistent session or try `BatchMode=yes` for raw data retrieval.
+- **PTY Requirement**: RunPod SSH often explicitly requires a pseudo-terminal. Commands failing with `Error: Your SSH client doesn't support PTY` confirm that `-tt` must be used.
+- **Process Management**: When restarting evaluations, always ensure `sglang` and `python` processes are terminated to release GPU memory: `pkill -f evaluation.py || true && pkill -f sglang || true`.
+- **Log Verification**: If `/app/evaluation_run.log` exists but `tail` shows nothing, the script might be in an initialization phase (DVC pull, pip install). Check `ps aux` for active `eval.sh` or `dvc` processes.
