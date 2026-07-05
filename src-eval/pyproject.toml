@@ -1,7 +1,7 @@
 [project]
-name = "axolotl-moe-evaluation"
+name = "vllm-moe-evaluation"
 version = "0.1.0"
-description = "Sglang Evaluation Pipeline"
+description = "vLLM Evaluation Pipeline"
 readme = "../README.md"
 requires-python = ">=3.10,<3.12"
 dependencies = [
@@ -10,7 +10,7 @@ dependencies = [
     "awscli",
     "boto3",
     "transformers",
-    "sglang",
+    "vllm",
     "mistral_common>=1.11.0"
 ]
 

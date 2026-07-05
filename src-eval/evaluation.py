@@ -17,7 +17,13 @@ import textstat
 
 def apply_vllm_mla_hotfix():
     """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
-    target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
+    try:
+        import vllm
+        vllm_path = os.path.dirname(vllm.__file__)
+        target_file = os.path.join(vllm_path, "model_executor/layers/attention/mla_attention.py")
+    except ImportError:
+        return
+
     if os.path.exists(target_file):
         with open(target_file, "r", encoding="utf-8") as f: code = f.read()
         broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
