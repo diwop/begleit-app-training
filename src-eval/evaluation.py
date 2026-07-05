@@ -282,6 +282,15 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
         # DYNAMIC HARDWARE DETECTION
         available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 2))
         
+        # Proactive fix for 2-GPU deadlocks on virtualized PCIe/InfiniBand (RunPod)
+        if available_gpus == 2:
+            if "NCCL_P2P_DISABLE" not in os.environ:
+                print("ℹ️ 2-GPU cluster detected. Auto-disabling NCCL P2P to prevent deadlocks.", flush=True)
+                os.environ["NCCL_P2P_DISABLE"] = "1"
+            if "NCCL_IB_DISABLE" not in os.environ:
+                os.environ["NCCL_IB_DISABLE"] = "1"
+            os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
+        
         print("📖 Loading tokenizer and formatting chat prompts...", flush=True)
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         
@@ -342,16 +351,25 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
             raw_text = out["text"].strip()
             reasoning_trace = ""
             
-            think_match = re.search(
-                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
-                raw_text, 
-                re.DOTALL | re.IGNORECASE
-            )
-            if think_match:
-                reasoning_trace = think_match.group(1).strip()
+            # 1. Primary Source: SGLang reasoning parser metadata
+            if reasoning_parser:
+                meta = out.get("meta_info", {})
+                reasoning_trace = meta.get("reasoning_content", "").strip()
+            
+            # 2. Fallback: Robust regex extraction if reasoning_trace is empty
+            if not reasoning_trace:
+                # Catching common Gemma/Llama reasoning delimiters
+                think_match = re.search(
+                    r"(?:<\|channel>thought\n|<\|channel\|>thought|<\|thought\|>|<(?:think|thought)>|\[(?:think|thought)\])(.*?)(?:<\|channel\|>|<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+                    raw_text, 
+                    re.DOTALL | re.IGNORECASE
+                )
+                if think_match:
+                    reasoning_trace = think_match.group(1).strip()
                 
+            # 3. Cleanup: Ensure reasoning tokens are removed from final text
             raw_text = re.sub(
-                r"(?:<\|channel>thought\n|<\|channel\|>thought|<|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
+                r"(?:<\|channel>thought\n|<\|channel\|>thought|<\|thought\|>|<(?:think|thought)>|\[(?:think|thought)\]).*?(?:<\|channel\|>|<channel\|>|</(?:think|thought)>|\[/(?:think|thought)\]|$)",
                 "", 
                 raw_text, 
                 flags=re.DOTALL | re.IGNORECASE
