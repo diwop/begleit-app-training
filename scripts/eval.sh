@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 LOG_FILE="/app/evaluation_run.log"
 
 echo "Installing evaluation dependencies..."
-uv pip install --system --break-system-packages textstat boto3 "dvc[s3]"
+uv pip install --system --break-system-packages --upgrade textstat boto3 "dvc[s3]"
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
