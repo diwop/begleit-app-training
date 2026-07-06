@@ -37,7 +37,7 @@ def read_file_with_extensions(base_path_str: str, extensions=[".txt", ".md"]) ->
         f"with extensions {extensions}."
     )
 
-def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None):
+def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, evaluation_set=None, enable_thinking=True, display_name=None):
     """
     Initializes the engine, handles conditional FP8 and architecture properties,
     and processes conversations through the safe native parallel llm.chat backend.
@@ -107,7 +107,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
                 max_tokens=4096,
                 skip_special_tokens=False # CRITICAL: Retain native hardware channel tokens
             )
-            chat_template_kwargs = {"enable_thinking": True}
+            chat_template_kwargs = {"enable_thinking": enable_thinking}
         else:
             sampling_params = SamplingParams(
                 temperature=0.3,
@@ -269,17 +269,15 @@ def main():
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
     EVALUATION_PIPELINE = []
-    # Mistral stays on compressed-tensors AWQ layout
-    EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, None))
-    if os.path.exists(os.path.join(mistral_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit", "compressed-tensors", 8192, mistral_adapter))
-
-    # # Gemma routes through the official model repo with hardware native FP8 execution
-    EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, None))
-    if os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append(("google/gemma-4-26b-a4b-it", "fp8", 8192, gemma_adapter))
-
-    EVALUATION_PIPELINE.append(("meta-llama/Llama-3.1-8B-Instruct", None, 8192, "tschomacker/lora_adapter_llama_3.1_8B"))
+    
+    # RedHat Gemma 4 FP8 (Native & Community preferred format)
+    base_gemma = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
+    
+    # Gemma 4 (Plain)
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, False, "Gemma 4 (Plain)"))
+    
+    # Gemma 4 (Reasoning)
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, True, "Gemma 4 (Reasoning)"))
     
     output_json = {
         "system": global_system_prompt,
@@ -300,12 +298,10 @@ def main():
         output_json["prompts"].append(record)
 
     # Cascade Batch Inference through registered models
-    for model_id, quant_type, max_len, adapter_id in EVALUATION_PIPELINE:
-        display_name = model_id
-        if adapter_id: display_name += f" ({adapter_id})"
+    for model_id, quant_type, max_len, adapter_id, enable_thinking, display_name in EVALUATION_PIPELINE:
         output_json["models"].append(display_name)
         
-        responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set)
+        responses = run_model_spike(model_id, quant_type, max_len, adapter_id, evaluation_set, enable_thinking, display_name)
         
         for idx, (text_response, reasoning_trace) in enumerate(responses):
             resp_fre, resp_wstf = get_raw_metrics(text_response)
@@ -341,12 +337,19 @@ def main():
 
 def apply_vllm_mla_hotfix():
     """Automated hotfix patch for an active vLLM regression (Issue #43263)."""
-    target_file = "/workspace/axolotl-venv/lib/python3.12/site-packages/vllm/model_executor/layers/attention/mla_attention.py"
+    try:
+        import vllm
+        vllm_path = os.path.dirname(vllm.__file__)
+        target_file = os.path.join(vllm_path, "model_executor/layers/attention/mla_attention.py")
+    except ImportError:
+        return
+
     if os.path.exists(target_file):
         with open(target_file, "r", encoding="utf-8") as f: code = f.read()
         broken_string = "kv_c_normed = kv_c_normed.to(self.kv_b_proj.weight.dtype)"
         fixed_string  = "kv_c_normed = kv_c_normed.to(_kv_b_proj_w_dtype)"
         if broken_string in code:
+            print("🔧 Applying vLLM MLA hotfix...", flush=True)
             with open(target_file, "w", encoding="utf-8") as f: f.write(code.replace(broken_string, fixed_string))
 
 if __name__ == "__main__":
