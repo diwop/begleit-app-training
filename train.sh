@@ -18,17 +18,10 @@ echo "Logs will be saved to: $LOG_FILE"
 echo "Pulling dataset from DVC..."
 python -m dvc pull
 
-echo "Executing dynamic hardware launcher..."
-
-# Temporarily disable 'set -e' so a crash doesn't kill the script
-set +e
-
-# Use 'tee' to print logs to the screen AND save them to the persistent disk.
-# 2>&1 captures both standard output and error messages
-# -u enforces unbuffered output by python
-python -u src/launcher.py --config "config/${TRAIN}.yml" 2>&1 | tee "$LOG_FILE"
-
-TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
+echo "=== Training Step Skipped by Configuration ==="
+echo "=== Running Evaluation Pipeline Directly ==="
+python -u src/evaluation.py 2>&1 | tee "$LOG_FILE"
+TRAIN_EXIT_CODE=${PIPESTATUS[0]}
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
