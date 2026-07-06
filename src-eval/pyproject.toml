@@ -9,8 +9,8 @@ dependencies = [
     "textstat>=0.7.13",
     "awscli",
     "boto3",
-    "transformers==5.10.2",
-    "vllm",
+    "transformers @ git+https://github.com/huggingface/transformers.git",
+    "vllm==0.7.3",
     "mistral_common>=1.11.0"
 ]
 
