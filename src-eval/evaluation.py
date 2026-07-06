@@ -75,18 +75,33 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
         # DYNAMIC HARDWARE DETECTION
         available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 2))
         
-        # --- MONKEYPATCH: Fix Gemma 4 RoPE scaling for newer transformers ---
+        # --- MONKEYPATCH: Fix Gemma 4 RoPE scaling for newer transformers & vLLM ---
         try:
             from transformers.models.gemma.configuration_gemma import GemmaConfig
             _orig_gemma_init = GemmaConfig.__init__
             def _patched_gemma_init(self, *args, **kwargs):
                 if "rope_scaling" in kwargs and kwargs["rope_scaling"] is not None:
                     rs = kwargs["rope_scaling"]
-                    if "rope_type" not in rs and "type" in rs:
-                        rs["rope_type"] = rs["type"]
+                    if isinstance(rs, dict):
+                        if "rope_type" not in rs and "type" in rs:
+                            rs["rope_type"] = rs["type"]
+                        if "rope_type" not in rs:
+                            rs["rope_type"] = "default" # Fallback for gemma4
                 _orig_gemma_init(self, *args, **kwargs)
             GemmaConfig.__init__ = _patched_gemma_init
-            print("🔧 Applied Gemma RoPE scaling hotfix.")
+            
+            import vllm.transformers_utils.config as vllm_config
+            _orig_patch_dict = vllm_config.patch_rope_scaling_dict
+            def _patched_vllm_dict(rope_scaling):
+                if "rope_type" not in rope_scaling:
+                    if "type" in rope_scaling:
+                        rope_scaling["rope_type"] = rope_scaling["type"]
+                    else:
+                        rope_scaling["rope_type"] = "default"
+                return _orig_patch_dict(rope_scaling)
+            vllm_config.patch_rope_scaling_dict = _patched_vllm_dict
+            
+            print("🔧 Applied Gemma RoPE scaling hotfix (Transformers + vLLM).")
         except Exception as e:
             print(f"⚠️ Failed to apply Gemma RoPE hotfix: {e}")
         # ------------------------------------------------------------------
