@@ -75,7 +75,23 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
         # DYNAMIC HARDWARE DETECTION
         available_gpus = int(os.environ.get("TP_SIZE", torch.cuda.device_count() if torch.cuda.is_available() else 2))
         
-        # Proactive fix for 2-GPU deadlocks on virtualized PCIe/InfiniBand (RunPod)
+        # --- MONKEYPATCH: Fix Gemma 4 RoPE scaling for newer transformers ---
+        try:
+            from transformers.models.gemma.configuration_gemma import GemmaConfig
+            _orig_gemma_init = GemmaConfig.__init__
+            def _patched_gemma_init(self, *args, **kwargs):
+                if "rope_scaling" in kwargs and kwargs["rope_scaling"] is not None:
+                    rs = kwargs["rope_scaling"]
+                    if "rope_type" not in rs and "type" in rs:
+                        rs["rope_type"] = rs["type"]
+                _orig_gemma_init(self, *args, **kwargs)
+            GemmaConfig.__init__ = _patched_gemma_init
+            print("🔧 Applied Gemma RoPE scaling hotfix.")
+        except Exception as e:
+            print(f"⚠️ Failed to apply Gemma RoPE hotfix: {e}")
+        # ------------------------------------------------------------------
+
+        # Cluster topology heuristics for multi-GPU awareness on virtualized PCIe/InfiniBand (RunPod)
         if available_gpus == 2:
             if "NCCL_P2P_DISABLE" not in os.environ:
                 print("ℹ️ 2-GPU cluster detected. Auto-disabling NCCL P2P to prevent deadlocks.", flush=True)
