@@ -1,5 +1,11 @@
 # --- src/evaluation.py ---
 import os
+import multiprocessing
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+
 import re
 import gc
 import sys
