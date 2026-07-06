@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /runner/repo/
+cd "$(dirname "$0")"
 
 # Check if both S3 variables are provided
 if [ -n "${S3_BUCKET:-}" ] && [ -n "${S3_ADAPTER_RUN:-}" ]; then

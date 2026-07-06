@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /runner/repo/
+cd "$(dirname "$0")"
 
 TRAIN=${TRAIN:-"train"}
 
