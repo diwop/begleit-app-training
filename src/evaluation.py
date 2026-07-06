@@ -16,6 +16,11 @@ from vllm.lora.request import LoRARequest
 from vllm.distributed.parallel_state import destroy_model_parallel
 import textstat
 
+# --- vLLM CRITICAL INITIALIZATION ---
+os.environ["VLLM_USE_V1"] = "0"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+# os.environ["NCCL_P2P_DISABLE"] = "1" # Uncomment if NCCL handshake hangs
+
 def get_raw_metrics(text: str) -> tuple:
     """Calculates German textstat metrics and returns rounded raw floats."""
     if not text.strip():
