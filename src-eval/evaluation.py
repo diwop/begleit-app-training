@@ -306,17 +306,17 @@ def main():
     
     # Model 1: Gemma Plain
     base_gemma = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
-    EVALUATION_PIPELINE.append((base_gemma, "fp8", 8192, None, "Gemma 4 (Plain)"))
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, "Gemma 4 (Plain)"))
     
     # Model 2: Gemma Reasoning (Same model, vLLM handles it)
-    EVALUATION_PIPELINE.append((base_gemma, "fp8", 8192, None, "Gemma 4 (Reasoning)"))
+    EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, "Gemma 4 (Reasoning)"))
     
     # Model 3: Gemma Fine-tuned (Merged or Adapter)
     merged_gemma = "/app/output/merged/train-gemma4-fp8"
     if os.path.exists(merged_gemma):
-        EVALUATION_PIPELINE.append((merged_gemma, "fp8", 8192, None, "Gemma 4 (Fine-tuned)"))
+        EVALUATION_PIPELINE.append((merged_gemma, None, 8192, None, "Gemma 4 (Fine-tuned)"))
     elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
-        EVALUATION_PIPELINE.append((base_gemma, "fp8", 8192, gemma_adapter, "Gemma 4 (Fine-tuned)"))
+        EVALUATION_PIPELINE.append((base_gemma, None, 8192, gemma_adapter, "Gemma 4 (Fine-tuned)"))
 
     # 4. EXECUTE PIPELINE
     output_json = {
