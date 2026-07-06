@@ -100,8 +100,14 @@ def run_evaluation(model_id, quantization_type, max_len=8192, adapter_id=None, e
                         rope_scaling["rope_type"] = "default"
                 return _orig_patch_dict(rope_scaling)
             vllm_config.patch_rope_scaling_dict = _patched_vllm_dict
+
+            # --- TOKENIZER PATCH: Fix missing attribute in newer transformers ---
+            from transformers import GemmaTokenizer, GemmaTokenizerFast
+            for cls in [GemmaTokenizer, GemmaTokenizerFast]:
+                if not hasattr(cls, "all_special_tokens_extended"):
+                    cls.all_special_tokens_extended = property(lambda self: self.all_special_tokens)
             
-            print("🔧 Applied Gemma RoPE scaling hotfix (Transformers + vLLM).")
+            print("🔧 Applied Gemma RoPE scaling & Tokenizer hotfix (Transformers + vLLM).")
         except Exception as e:
             print(f"⚠️ Failed to apply Gemma RoPE hotfix: {e}")
         # ------------------------------------------------------------------
