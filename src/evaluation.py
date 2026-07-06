@@ -207,15 +207,8 @@ def main():
         "Was ist die Quadratwurzel aus 16?",
         "# Magdeburg bundesweit vorn bei Hausärztinnen\n\nNirgendwo in Deutschland ist der Frauenanteil bei den Hausärzten so hoch wie in Magdeburg...",
         "Guten Tag! Wie geht es Ihnen?",
-        "guten Tag wie geht es ihnen",
-        "Guten Tag, Herr Müller! Wie geht es Ihnen?",
-        "guten Tag Herr Müller wie geht es ihnen",
         "Herr Müller, beim letzten Mal haben wir über Bluthochdruck gesprochen. Erinnern sie sich noch, was das bedeutet?",
-        "Herr Müller beim letzten mal haben wir über Bluthochdruck gesprochen erinnern sie sich noch was das bedeutet",
         "Das hier sind Ihre Blutdruckwerte aus der letzten Woche. Da können Sie sehen, dass der Blutdruck immer noch zu hoch ist. Sie sollten versuchen, Ihren Blutdruck zu senken. Das können Sie tun, indem Sie weniger Salz essen und mehr Sport treiben. Ansonsten können Sie auch einen Blutdrucksenker einnehmen. Aber erstmal sollten wir es mit den Anpassungen bei Ihrem Lebensstil versuchen. Haben Sie dazu Fragen?",
-        "Das hier sind ihre Blutdruckwerte aus der letzten Woche da können sie sehen das der Blutdruck immer noch zu hoch ist sie sollten versuchen ihren Blutdruck zu senken das können sie tun indem sie weniger Salz essen und mehr Sport treiben ansonsten können sie auch einen Blutdrucksenker einnehmen aber erstmal sollten wir es mit den Anpassungen bei ihrem Lebensstil versuchen haben sie dazu Fragen",
-        "Haben Sie noch eine angenehme Woche. Bis zum nächsten Mal!",
-        "haben Sie noch eine angenehme Woche bis zum nächsten mal",
         "Die Quantenchromodynamik (kurz QCD) ist eine Quantenfeldtheorie zur Beschreibung der starken Wechselwirkung. Sie beschreibt die Wechselwirkung von Quarks und Gluonen, also der fundamentalen Bausteine der Atomkerne.\nDie QCD ist wie die Quantenelektrodynamik (QED) eine Eichtheorie. Während die QED jedoch auf der abelschen Eichgruppe U(1) beruht und die Wechselwirkung elektrisch geladener Teilchen (z. B. Elektron oder Positron) mit Photonen beschreibt, wobei die Photonen selbst ungeladen sind, ist die Eichgruppe der QCD, die SU(3), nicht-abelsch. Es handelt sich also um eine Yang-Mills-Theorie. Die Wechselwirkungsteilchen der QCD sind die Gluonen, und an die Stelle der elektrischen Ladung als Erhaltungsgröße tritt die Farbladung (daher der Name Chromodynamik). Die Gluonen selbst sind im Gegensatz zu den Eichteilchen der QED „geladen“, das heißt Träger von Farbladungen, und wechselwirken auch untereinander.",
         "# Lachs im Sesammantel auf Erbsenpüree und Zuckerschotenstroh\nZutaten Für 4 Portionen:\n* 4 Lachssteak(s) küchenfertig, à 140 g\n* 4 EL Sesam geröstet, weiß und schwarz\n* 2 EL Öl (Woköl mit Sesamaroma)\n* 2 EL Butter\n* 2 Schalotte(n)\n* 400 g Erbsen, TK\n* 2 EL Sahne\n* Salz und Pfeffer\n* Muskat\n* Zucker\n* 100 g Zuckerschote(n)\n* 1 EL Butter\n* Erbsensprossen (Erbsenspargelsprossen) für die Dekoration\nGesamtzeit: 35 Min.\nArbeitszeit: 25 Min.\nKoch-/Backzeit: 10 Min.\n1. Die Schalotten abziehen und in Würfel schneiden. Diese in einem Topf mit der Butter angehen lassen, die aufgetauten Erbsen zufügen. Etwas angehen lassen und mit Salz, Pfeffer, Zucker und Muskat würzen. Sahne zufügen, ca. fünf Minuten dünsten und danach im Mixer sehr fein pürieren.\n2. Den Lachs im Sesam wenden und in einer Pfanne mit dem Öl bei mittlerer Hitze von beiden Seiten je zwei Minuten braten und anschließend zwei Minuten ruhen lassen. Mit Salz und Pfeffer würzen.\n3. Die Zuckerschoten in dünne Streifen schneiden und in Butter glacieren. Mit Salz, Muskat und etwas Zucker würzen.\n4. Anrichten: Das Püree auf einem tiefen Teller anrichten, den aufgeschnittenen Lachs darauf setzen und von den glacierten Schoten einen Löffel dararauf verteilen. Mit Erbsspargelsprossen dekorieren.\n5. Guten Appetit!",
         "The Creation of the World\nIn the beginning, God created the heavens and the earth. The earth was without form and void, and darkness was over the face of the deep. And the Spirit of God was hovering over the face of the waters.\nAnd God said, “Let there be light,” and there was light. And God saw that the light was good. And God separated the light from the darkness. God called the light Day, and the darkness he called Night. And there was evening and there was morning, the first day.",
@@ -268,16 +261,39 @@ def main():
     if not os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
         gemma_adapter = "/app/output/adapter/train-gemma4"
 
+    # --- PIPELINE CONFIGURATION ---
     EVALUATION_PIPELINE = []
     
-    # RedHat Gemma 4 FP8 (Native & Community preferred format)
+    # Model 1: Gemma 4 (Plain)
     base_gemma = "RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic"
-    
-    # Gemma 4 (Plain)
     EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, False, "Gemma 4 (Plain)"))
     
-    # Gemma 4 (Reasoning)
+    # Model 2: Gemma 4 (Reasoning)
     EVALUATION_PIPELINE.append((base_gemma, None, 8192, None, True, "Gemma 4 (Reasoning)"))
+
+    # Model 3: Gemma 4 (Fine-tuned Merged)
+    merged_gemma = "/app/output/merged/train-gemma4-fp8"
+    if os.path.exists(merged_gemma):
+        EVALUATION_PIPELINE.append((merged_gemma, None, 8192, None, True, "Gemma 4 (Fine-tuned)"))
+    elif os.path.exists(os.path.join(gemma_adapter, "adapter_config.json")):
+        # Fallback to base + adapter if merged not found
+        EVALUATION_PIPELINE.append((base_gemma, None, 8192, gemma_adapter, True, "Gemma 4 (Fine-tuned)"))
+
+    # --- PARKED MODELS (a5a44a52) ---
+    # base_mistral = "cyankiwi/Mistral-Small-4-119B-2603-AWQ-4bit"
+    # # Model 4: Mistral 119B (Plain)
+    # EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, False, "Mistral 119B (Plain)"))
+    # # Model 5: Mistral 119B (Reasoning)
+    # EVALUATION_PIPELINE.append((base_mistral, "compressed-tensors", 8192, None, True, "Mistral 119B (Reasoning)"))
+
+    # # Model 6: Nemotron 30B (Reasoning)
+    # base_nemotron = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+    # EVALUATION_PIPELINE.append((base_nemotron, None, 8192, None, True, "Nemotron 30B (Reasoning)"))
+
+    # # Model 7: Llama 3.1 8B (Fine-tuned)
+    # base_llama = "meta-llama/Llama-3.1-8B-Instruct"
+    # llama_adapter = "tschomacker/lora_adapter_llama_3.1_8B"
+    # EVALUATION_PIPELINE.append((base_llama, None, 8192, llama_adapter, False, "Llama 3.1 8B (Fine-tuned)"))
     
     output_json = {
         "system": global_system_prompt,
