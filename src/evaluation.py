@@ -115,7 +115,7 @@ def run_model_spike(model_id, quantization_type, max_len=8192, adapter_id=None, 
                 max_tokens=4096,
                 skip_special_tokens=False
             )
-            chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral else {}
+            chat_template_kwargs = {"reasoning_effort": "high"} if is_mistral and enable_thinking else {}
             
         generate_kwargs = {}
         if adapter_id:
