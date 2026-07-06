@@ -22,6 +22,7 @@ uv pip install --system --break-system-packages --upgrade "textstat>=0.7.13" bot
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 export TORCH_NCCL_BLOCKING_WAIT=1
