@@ -8,7 +8,7 @@ jobs:
     name: Check Dependabot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Validate dependabot.yml
         uses: marocchino/validate-dependabot@v3
         with:
@@ -18,7 +18,7 @@ jobs:
     name: Check if dataset was prepared
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: iterative/setup-dvc@v3
       - name: Pull dataset from DVC
         run: dvc pull
@@ -29,7 +29,7 @@ jobs:
     name: Test Python Code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -53,7 +53,7 @@ jobs:
           sudo time rm -rf /usr/local/lib/android
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Run Smoke Test in Docker
         run: |
           BASE_IMAGE=$(grep '^axolotl_image:' README.md | awk '{print $2}' | tr -d '\r')
