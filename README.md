@@ -1,6 +1,6 @@
 ---
-axolotl_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-vllm_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+train_image: axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
+eval_image: lmsysorg/sglang:latest-cu130
 ---
 # DiWop Begleit-App Training
 

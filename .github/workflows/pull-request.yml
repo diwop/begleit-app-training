@@ -41,8 +41,8 @@ jobs:
       - name: Run Pytest
         run: uv run --project src-train pytest tests/
 
-  smoke-test-axolotl:
-    name: Axolotl Container Environment Test
+  smoke-test-train:
+    name: Training Container Environment Test
     runs-on: ubuntu-latest
     steps:
       - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
@@ -54,10 +54,10 @@ jobs:
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
       - uses: actions/checkout@v6
-      - name: Run Axolotl Smoke Test in Docker
+      - name: Run Training Smoke Test in Docker
         run: |
-          BASE_IMAGE=$(grep '^axolotl_image:' README.md | awk '{print $2}' | tr -d '\r')
-          echo "Booting $BASE_IMAGE..."
+          BASE_IMAGE=$(grep '^train_image:' README.md | awk '{print $2}' | tr -d '\r')
+          echo "Booting $BASE_IMAGE for training smoke test..."
           
           docker run --rm \
             -v ${{ github.workspace }}:/app \
@@ -72,11 +72,11 @@ jobs:
             uv pip install --system --no-cache src-train/
             
             echo 'Executing Version Integrity Smoke Test...'
-            python tests/container_smoke_test.py
+            python tests/train_container_smoke_test.py
             "
 
-  smoke-test-vllm:
-    name: vLLM Container Environment Test
+  smoke-test-eval:
+    name: Evaluation Container Environment Test
     runs-on: ubuntu-latest
     steps:
       - name: Free up GitHub runner disk space # otherwise the huge docker image cannot be loaded
@@ -88,9 +88,9 @@ jobs:
           sudo time rm -rf /opt/ghc
           sudo time rm -rf /opt/hostedtoolcache
       - uses: actions/checkout@v6
-      - name: Run vLLM Smoke Test in Docker
+      - name: Run evaluation Smoke Test in Docker
         run: |
-          BASE_IMAGE=$(grep '^vllm_image:' README.md | awk '{print $2}' | tr -d '\r')
+          BASE_IMAGE=$(grep '^train_image:' README.md | awk '{print $2}' | tr -d '\r')
           echo "Booting $BASE_IMAGE..."
           
           docker run --rm \
