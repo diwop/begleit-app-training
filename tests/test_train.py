@@ -40,14 +40,12 @@ def mock_makedirs():
 
 # --- NEW FIXTURE ---
 @pytest.fixture(autouse=True)
-def mock_hf_env_and_download(monkeypatch):
+def mock_hf_env(monkeypatch):
     """
-    Automatically injects a dummy HF_TOKEN to bypass the critical security check 
-    and mocks snapshot_download to prevent massive network fetches during CI runs.
+    Automatically injects a dummy HF_TOKEN to bypass the critical security check.
+    Weights are fetched by the `hf` CLI, which mock_subprocess already intercepts.
     """
     monkeypatch.setenv("HF_TOKEN", "mock_hf_token_for_ci_pipeline")
-    with patch("train.snapshot_download") as mock_download:
-        yield mock_download
 
 
 def test_no_cuda_exits(mock_cuda):
@@ -95,13 +93,13 @@ def test_run_training_job_respects_attn_implementation(mock_exists, mock_conf_sa
     # Test case 1: Default behavior when no attn_implementation is specified
     mock_cfg_1 = {"base_model": "some-model"}
     mock_merge.return_value = mock_cfg_1
-    run_training_job("config/dummy.yml", num_gpus=1, run_id="test_run")
+    run_training_job("config/dummy.yml", num_gpus=1)
     assert mock_cfg_1.get("attn_implementation") == "flash_attention_2"
 
     # Test case 2: Overridden behavior when attn_implementation is specified in configuration
     mock_cfg_2 = {"base_model": "some-model", "attn_implementation": "sdpa"}
     mock_merge.return_value = mock_cfg_2
-    run_training_job("config/dummy.yml", num_gpus=1, run_id="test_run")
+    run_training_job("config/dummy.yml", num_gpus=1)
     assert mock_cfg_2.get("attn_implementation") == "sdpa"
 
 
@@ -129,7 +127,7 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
     
     try:
         # Configure return value for run_training_job mock to support unpacking
-        mock_run_job.return_value = ("/app/output/adapter/mock", {})
+        mock_run_job.return_value = ("/app/output/adapter/mock", {}, ".merged-mock.yml")
         
         # Case 1: 2 GPUs -> Mistral should be skipped, Gemma should run
         mock_cuda.device_count.return_value = 2
@@ -159,3 +157,42 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
         
     finally:
         train.TRAINING_PIPELINE = original_pipeline
+
+@patch("train.shutil.rmtree")
+@patch("train.run_fp8_compression")
+@patch("train.merge_gemma4_lora")
+@patch("train.pre_download_models")
+@patch("train.run_training_job")
+def _run_pipeline(mock_run_job, mock_pre_download, mock_merge_lora, mock_fp8, mock_rmtree,
+                  mock_cuda, mock_subprocess, post_training_merge):
+    """Drives main() for one Gemma job and returns the `aws s3 sync` destinations."""
+    mock_cuda.is_available.return_value = True
+    mock_cuda.device_count.return_value = 2
+    mock_run_job.return_value = (
+        "/app/output/adapter/train-gemma4",
+        {"base_model": "google/gemma-4-26b-a4b-it", "post_training_merge": post_training_merge},
+        ".merged-train-gemma4.yml",
+    )
+    with patch("train.os.path.isdir", return_value=True):
+        main()
+    return [call.args[0][4] for call in mock_subprocess.call_args_list
+            if call.args and call.args[0][:3] == ["aws", "s3", "sync"]]
+
+
+def test_publishes_both_adapter_and_merged_model(mock_cuda, mock_subprocess, monkeypatch):
+    """The adapter and the merged FP8 model must both reach S3, at the paths eval expects."""
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
+    targets = _run_pipeline(mock_cuda=mock_cuda, mock_subprocess=mock_subprocess, post_training_merge=True)
+
+    assert len(targets) == 2, targets
+    assert any(t.endswith("/train-gemma4") and "_run/" in t for t in targets), targets
+    assert "s3://test-bucket/models/train-gemma4-fp8" in targets, targets
+
+
+def test_merge_can_be_disabled(mock_cuda, mock_subprocess, monkeypatch):
+    """With post_training_merge false, only the adapter is published."""
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
+    targets = _run_pipeline(mock_cuda=mock_cuda, mock_subprocess=mock_subprocess, post_training_merge=False)
+
+    assert len(targets) == 1, targets
+    assert targets[0].endswith("/train-gemma4")

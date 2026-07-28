@@ -16,6 +16,8 @@ liger_layer_norm: true
 liger_fused_linear_cross_entropy: true
 
 adapter: lora
+# TODO: audit this model's module tree and qualify the targets as in train-gemma4.yml.
+lora_target_linear: true
 load_in_8bit: false
 load_in_4bit: false
 qlora_sharded_model_loading: false

@@ -2,12 +2,14 @@
 import os
 import json
 import time
+import shutil
 import datetime
 import torch
 import subprocess
 import sys
-from omegaconf import OmegaConf
-from huggingface_hub import snapshot_download
+from dataclasses import dataclass
+from typing import List, Tuple
+from omegaconf import DictConfig, OmegaConf
 
 # Force Hugging Face to use the persistent volume cache directory to prevent downloading to container root disk
 os.environ["HF_HOME"] = "/app/huggingface_cache"
@@ -17,6 +19,17 @@ TRAINING_PIPELINE = [
     "config/train-gemma4.yml",
     # "config/train-mistral4small.yml" Mistral is not feasible on RunPod (OOM at 4x L40S)
 ]
+
+# Where src-eval/evaluation.py expects to find merged models, locally and in S3.
+MERGED_DIR = "/app/output/merged"
+MERGED_S3_PREFIX = "models"
+
+
+@dataclass
+class SyncTarget:
+    """A directory to publish and the S3 prefix it belongs under."""
+    local_dir: str
+    s3_prefix: str
 
 def merge_configs(base_path: str, override_path: str):
     """Loads and merges a base YAML and an override YAML. Override values take precedence."""
@@ -136,7 +149,7 @@ def generate_runtime_deepspeed(
     print(f"✅ DeepSpeed Stage 3 configuration compiled successfully at: {output_json_path} (cpu_checkpointing={cpu_checkpointing}, offload_optimizer={offload_optimizer}, offload_param={offload_param}, param_persistence_threshold={ds_dict['zero_optimization']['stage3_param_persistence_threshold']})")
     return output_json_path
 
-def run_training_job(config_path: str, num_gpus: int, run_id: str) -> tuple[str, dict]:
+def run_training_job(config_path: str, num_gpus: int) -> Tuple[str, DictConfig, str]:
     """
     Loads YAML parameters, binds unified runtime DeepSpeed assets, 
     and launches the distributed training engine without model-specific hardcodes.
@@ -338,57 +351,66 @@ def main():
     
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_run"
-    completed_output_dirs = []
-    import time
+    sync_targets: List[SyncTarget] = []
+    merge_failed = False
 
     print(f"🎬 Starting Pipeline Master Loop ({len(active_pipeline)} jobs registered)...")
-    
+
     for config_yaml_path in active_pipeline:
-        output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus, run_id)
-        completed_output_dirs.append((output_path, config_yaml_path))
-        
+        output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus)
+        config_name = os.path.basename(config_yaml_path).replace(".yml", "").replace(".yaml", "")
+        sync_targets.append(SyncTarget(output_path, f"{run_id}/{config_name}"))
+
         # Post-training Merge and Quantization
-        base_model_id = merged_config_data.get("base_model")
+        base_model_id = str(merged_config_data.get("base_model") or "")
         is_gemma4 = "gemma-4" in base_model_id.lower()
-        
-        if is_gemma4:
-            merged_bf16_dir = os.path.join(os.path.dirname(output_path), "merged-bf16")
-            merged_fp8_dir = os.path.join(os.path.dirname(output_path), "merged-fp8")
-            
+        wants_merge = bool(merged_config_data.get("post_training_merge", True))
+
+        if is_gemma4 and not wants_merge:
+            print("\n⏭️  post_training_merge is disabled; publishing the adapter only.", flush=True)
+
+        if is_gemma4 and wants_merge:
+            merged_bf16_dir = os.path.join(MERGED_DIR, f"{config_name}-bf16")
+            merged_fp8_dir = os.path.join(MERGED_DIR, f"{config_name}-fp8")
+
             try:
                 # Phase 1: Merge
                 merge_gemma4_lora(resolved_config_path, output_path, merged_bf16_dir)
-                
+
                 # Phase 2: Quantize
                 run_fp8_compression(merged_bf16_dir, merged_fp8_dir)
-                
-                # Add the final merged model to completed dirs for S3 sync
-                completed_output_dirs.append((merged_fp8_dir, config_yaml_path))
-                
+
+                sync_targets.append(SyncTarget(merged_fp8_dir, f"{MERGED_S3_PREFIX}/{config_name}-fp8"))
+
                 # Cleanup BF16 merged model to save disk space
                 print(f"🧹 Cleaning up intermediate BF16 merged model at {merged_bf16_dir}")
-                import shutil
                 shutil.rmtree(merged_bf16_dir, ignore_errors=True)
-                
+
             except Exception as e:
+                # Sync the adapter first so the run is not a total loss, then fail below.
                 print(f"❌ Error during post-training merge/quantization: {e}")
-                # We don't exit here to allow S3 sync of the adapter at least
+                merge_failed = True
 
     # Cloud Sync Layer
     s3_bucket = os.environ.get("S3_BUCKET", "")
     if s3_bucket:
         print("\n" + "="*60 + "\n📤 INITIATING MASTER CLOUD SYNCHRONIZATION TO S3\n" + "="*60, flush=True)
-        for output_dir, config_path in completed_output_dirs:
-            if os.path.exists(os.path.join(output_dir, "adapter_config.json")):
-                model_target_dirname = os.path.basename(os.path.normpath(output_dir))
-                s3_target = f"s3://{s3_bucket}/{run_id}/{model_target_dirname}"
-                print(f"Syncing directory: {output_dir} -> {s3_target} ...", flush=True)
-                try:
-                    subprocess.run(["aws", "s3", "sync", output_dir, s3_target], check=True)
-                    print(f"✅ Synchronization successful for {model_target_dirname}!")
-                except subprocess.CalledProcessError as e:
-                    print(f"⚠️ [WARNING] S3 Sync failed for {output_dir} with exit code {e.returncode}!")
-                    time.sleep(60)
+        for target in sync_targets:
+            if not os.path.isdir(target.local_dir):
+                print(f"⚠️ [WARNING] Nothing to sync, directory missing: {target.local_dir}")
+                continue
+            s3_target = f"s3://{s3_bucket}/{target.s3_prefix}"
+            print(f"Syncing directory: {target.local_dir} -> {s3_target} ...", flush=True)
+            try:
+                subprocess.run(["aws", "s3", "sync", target.local_dir, s3_target], check=True)
+                print(f"✅ Synchronization successful for {target.s3_prefix}!")
+            except subprocess.CalledProcessError as e:
+                print(f"⚠️ [WARNING] S3 Sync failed for {target.local_dir} with exit code {e.returncode}!")
+                time.sleep(60)
+
+    if merge_failed:
+        print("\n❌ [FATAL] Merge/quantization failed. Adapters were synced, but no merged model was produced.")
+        sys.exit(1)
 
     # TODO: Activate when evaluation can process adapters
     # Evaluation Layer

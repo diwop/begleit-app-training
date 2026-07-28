@@ -22,6 +22,14 @@ liger_fused_linear_cross_entropy: true
 # Set to standard lora since the base model is unquantized bfloat16
 adapter: lora
 
+# Fully qualified: bare suffixes like gate_proj also match the vision tower, whose
+# Gemma4ClippableLinear wrappers break both PEFT merge_lora and SGLang's adapter loader.
+lora_target_modules: 'model\.language_model\.layers\.[\d]+\.(_checkpoint_wrapped_module\.)?(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj'
+
+# The adapter (~74 MB) is always published. The merged FP8 model is ~28 GB and costs a
+# merge plus a quantization pass; set false once eval can serve the adapter directly.
+post_training_merge: true
+
 unsloth: false
 load_in_8bit: false # Disabled: Fits natively sharded under ZeRO-3
 load_in_4bit: false

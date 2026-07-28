@@ -3,7 +3,8 @@ adapter: qlora
 lora_r: 32
 lora_alpha: 64
 lora_dropout: 0.05
-lora_target_linear: true
+# Target modules are model-specific: `lora_target_linear` also hits vision towers and
+# MoE routers. Each model config declares its own; verify with src-train/audit_adapter.py.
 
 # Precision architecture tailored for modern compute architectures
 bf16: true
