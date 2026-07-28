@@ -1,6 +1,6 @@
 ---
 train_image: axolotlai/axolotl-cloud-uv:main-py3.12-cu130-2.10.0
-eval_image: lmsysorg/sglang:latest-cu130
+eval_image: lmsysorg/sglang:nightly-dev-cu13-20260626-f83cbc25
 ---
 # DiWop Begleit-App Training
 

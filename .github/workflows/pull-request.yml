@@ -90,9 +90,9 @@ jobs:
       - uses: actions/checkout@v6
       - name: Run evaluation Smoke Test in Docker
         run: |
-          BASE_IMAGE=$(grep '^train_image:' README.md | awk '{print $2}' | tr -d '\r')
+          BASE_IMAGE=$(grep '^eval_image:' README.md | awk '{print $2}' | tr -d '\r')
           echo "Booting $BASE_IMAGE..."
-          
+
           docker run --rm \
             -v ${{ github.workspace }}:/app \
             -w /app \
@@ -100,8 +100,8 @@ jobs:
             --entrypoint bash \
             $BASE_IMAGE -c "
             echo 'Installing evaluation dependencies...'
-            pip install --no-cache-dir textstat boto3 vllm
-            
-            echo 'Executing vLLM Version Integrity Smoke Test...'
+            pip install --no-cache-dir boto3
+
+            echo 'Executing SGLang Version Integrity Smoke Test...'
             python tests/eval_container_smoke_test.py
             "

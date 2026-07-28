@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Runs on the SGLang image (eval_image in README.md), which already provides sglang and
+# torch. Nothing here installs an inference engine: mixing vLLM into this image is what
+# produced the transformers / huggingface_hub breakages in the July 5 runs.
+
 # Navigate to the repository root relative to the script location
 cd "$(dirname "$0")/.."
 
@@ -17,20 +21,22 @@ fi
 echo "Pulling dataset from DVC (isolated)..."
 /tmp/dvc-venv/bin/python3 -m dvc pull
 
-echo "Installing evaluation dependencies (system)..."
-uv pip install --system --break-system-packages --upgrade "textstat>=0.7.13" boto3 "vllm==0.7.3" "transformers @ git+https://github.com/huggingface/transformers.git"
+echo "Installing evaluation dependencies..."
+pip install --no-cache-dir --upgrade boto3
 
 export TP_SIZE=${TP_SIZE:-2}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-1}
+export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export TORCH_NCCL_BLOCKING_WAIT=1
 export HF_HOME=${HF_HOME:-/app/huggingface_cache}
 
-echo "Running evaluation script..."
+# No SGLang source patches are installed. The five that existed before were workarounds
+# for an adapter that carried vision-tower and router weights; a failure here is an
+# upstream capability gap and the traceback names it directly.
+echo "Running SGLang adapter smoke test..."
 set +e
-python3 -u src-eval/evaluation.py 2>&1 | tee "$LOG_FILE"
+python3 -u src-eval/smoke_adapter.py 2>&1 | tee "$LOG_FILE"
 EVAL_EXIT_CODE=${PIPESTATUS[0]}
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
