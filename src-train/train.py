@@ -21,6 +21,9 @@ TRAINING_PIPELINE = [
 ]
 
 # Where src-eval/evaluation.py expects to find merged models, locally and in S3.
+# The S3 prefix is versioned per run: overwriting a merged model in place is unsafe,
+# because transformers prefers a stray model.safetensors over a newer shard index and
+# would silently load the older weights.
 MERGED_DIR = "/app/output/merged"
 MERGED_S3_PREFIX = "models"
 
@@ -254,6 +257,16 @@ def merge_gemma4_lora(config_path: str, adapter_dir: str, output_dir: str):
         print(f"❌ Axolotl merge failed with exit code {e.returncode}")
         raise e
 
+def resolve_merged_dir(output_dir: str) -> str:
+    """
+    Axolotl's merge_lora writes the model into a nested `merged/` subdirectory rather
+    than into --output_dir itself. Returns whichever level actually holds the model.
+    """
+    for candidate in (os.path.join(output_dir, "merged"), output_dir):
+        if os.path.exists(os.path.join(candidate, "config.json")):
+            return candidate
+    raise FileNotFoundError(f"❌ No config.json found under '{output_dir}' or its 'merged/' subdirectory")
+
 def run_fp8_compression(merged_bf16_dir: str, output_fp8_dir: str):
     """
     Phase 2: Post-Training FP8 Quantization
@@ -262,16 +275,19 @@ def run_fp8_compression(merged_bf16_dir: str, output_fp8_dir: str):
     from transformers import AutoProcessor, AutoModelForCausalLM
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
-    
+
     print("\n" + "="*60)
     print(f"📉 APPLYING FP8 QUANTIZATION: {merged_bf16_dir}")
     print("="*60, flush=True)
 
+    # FP8_DYNAMIC is calibration-free, so no GPU is needed. Loading onto CPU also leaves
+    # room for llmcompressor to unpack the packed 3D MoE expert tensors into 2D Linears,
+    # which OOMs on a GPU that device_map="auto" has already filled.
     print(f"Loading merged BF16 model: {merged_bf16_dir}")
     model = AutoModelForCausalLM.from_pretrained(
         merged_bf16_dir,
         torch_dtype="auto",
-        device_map="auto",
+        device_map="cpu",
         trust_remote_code=True
     )
     processor = AutoProcessor.from_pretrained(merged_bf16_dir, trust_remote_code=True)
@@ -378,9 +394,9 @@ def main():
                 merge_gemma4_lora(resolved_config_path, output_path, merged_bf16_dir)
 
                 # Phase 2: Quantize
-                run_fp8_compression(merged_bf16_dir, merged_fp8_dir)
+                run_fp8_compression(resolve_merged_dir(merged_bf16_dir), merged_fp8_dir)
 
-                sync_targets.append(SyncTarget(merged_fp8_dir, f"{MERGED_S3_PREFIX}/{config_name}-fp8"))
+                sync_targets.append(SyncTarget(merged_fp8_dir, f"{MERGED_S3_PREFIX}/{run_id}/{config_name}-fp8"))
 
                 # Cleanup BF16 merged model to save disk space
                 print(f"🧹 Cleaning up intermediate BF16 merged model at {merged_bf16_dir}")

@@ -160,11 +160,12 @@ def test_launcher_gpu_filtering(mock_run_job, mock_pre_download, mock_exists, mo
 
 @patch("train.shutil.rmtree")
 @patch("train.run_fp8_compression")
+@patch("train.resolve_merged_dir")
 @patch("train.merge_gemma4_lora")
 @patch("train.pre_download_models")
 @patch("train.run_training_job")
-def _run_pipeline(mock_run_job, mock_pre_download, mock_merge_lora, mock_fp8, mock_rmtree,
-                  mock_cuda, mock_subprocess, post_training_merge):
+def _run_pipeline(mock_run_job, mock_pre_download, mock_merge_lora, mock_resolve, mock_fp8,
+                  mock_rmtree, mock_cuda, mock_subprocess, post_training_merge):
     """Drives main() for one Gemma job and returns the `aws s3 sync` destinations."""
     mock_cuda.is_available.return_value = True
     mock_cuda.device_count.return_value = 2
@@ -186,7 +187,10 @@ def test_publishes_both_adapter_and_merged_model(mock_cuda, mock_subprocess, mon
 
     assert len(targets) == 2, targets
     assert any(t.endswith("/train-gemma4") and "_run/" in t for t in targets), targets
-    assert "s3://test-bucket/models/train-gemma4-fp8" in targets, targets
+    # The merged model is versioned per run so it can never overwrite an earlier one.
+    merged = [t for t in targets if t.endswith("/train-gemma4-fp8")]
+    assert len(merged) == 1 and merged[0].startswith("s3://test-bucket/models/"), targets
+    assert "_run/" in merged[0], merged
 
 
 def test_merge_can_be_disabled(mock_cuda, mock_subprocess, monkeypatch):
