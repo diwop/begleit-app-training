@@ -31,10 +31,18 @@ export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export TORCH_NCCL_BLOCKING_WAIT=1
 export HF_HOME=${HF_HOME:-/app/huggingface_cache}
 
-# No SGLang source patches are installed. The five that existed before were workarounds
-# for an adapter that carried vision-tower and router weights; a failure here is an
-# upstream capability gap and the traceback names it directly.
-echo "Running SGLang adapter smoke test..."
+# 'auto' picks whichever engine the image provides. SMOKE_ADAPTER_S3 pins the S3 prefix:
+# without it the newest '*_run/' wins, which has silently tested the wrong adapter before.
+export SMOKE_ENGINE=${SMOKE_ENGINE:-auto}
+export SMOKE_ADAPTER_S3=${SMOKE_ADAPTER_S3:-}
+export SMOKE_BASE=${SMOKE_BASE:-google/gemma-4-26b-a4b-it}
+
+echo "=== adapter smoke test ==="
+echo "  engine : ${SMOKE_ENGINE}"
+echo "  base   : ${SMOKE_BASE}"
+echo "  adapter: ${SMOKE_ADAPTER_S3:-<newest *_run/ prefix>}"
+# No engine source patches are installed: a failure here is an upstream capability gap
+# and the traceback names it directly.
 set +e
 python3 -u src-eval/smoke_adapter.py 2>&1 | tee "$LOG_FILE"
 EVAL_EXIT_CODE=${PIPESTATUS[0]}
@@ -43,7 +51,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 if [ -n "${S3_BUCKET:-}" ]; then
     echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
     FILENAME="logs/${TIMESTAMP}_evaluation.log"
-    python -u -c "import boto3; boto3.client('s3').upload_file('$LOG_FILE', '$S3_BUCKET', '$FILENAME')"
+    python3 -u -c "import boto3; boto3.client('s3').upload_file('$LOG_FILE', '$S3_BUCKET', '$FILENAME')"
 
     if [ $? -eq 0 ]; then
         echo "Logs copied to S3 as $FILENAME."

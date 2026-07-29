@@ -28,6 +28,8 @@ ADAPTER_NAME = "ft"
 ENGINE = os.environ.get("SMOKE_ENGINE", "auto")
 TP_SIZE = int(os.environ.get("TP_SIZE", "2"))
 MAX_NEW_TOKENS = int(os.environ.get("SMOKE_MAX_TOKENS", "512"))
+# vLLM reserves this share of the card up front and refuses to start if it is not free.
+GPU_MEMORY_UTILIZATION = float(os.environ.get("SMOKE_GPU_MEM_UTIL", "0.90"))
 
 # Iteration 2 in failures-and-fixes.md: FlashInfer cannot handle Gemma 4's mixed head
 # dimensions (256 sliding / 512 global). That is a property of the base model, not the
@@ -219,6 +221,7 @@ class VLLMBackend:
             "enable_lora": True,
             "max_loras": 1,
             "max_lora_rank": rank,
+            "gpu_memory_utilization": GPU_MEMORY_UTILIZATION,
         }
         print(f"⚙️  vllm.LLM({kwargs})", flush=True)
         self.engine = LLM(**kwargs)
