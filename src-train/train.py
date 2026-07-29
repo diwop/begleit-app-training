@@ -8,6 +8,7 @@ import torch
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple
 from omegaconf import DictConfig, OmegaConf
 
@@ -379,6 +380,16 @@ def main():
 
         # Post-training Merge and Quantization
         base_model_id = str(merged_config_data.get("base_model") or "")
+
+        # PEFT accepts a regex target_modules, SGLang only a list. Expand it so the
+        # published adapter loads in an inference engine as well as in merge_lora.
+        try:
+            from expand_targets import expand
+            print(f"\n🔧 Expanding adapter target_modules for engine compatibility: {output_path}", flush=True)
+            print(f"✅ target_modules now lists {expand(Path(output_path), base_model_id)} module names", flush=True)
+        except Exception as e:
+            print(f"⚠️ [WARNING] Could not expand target_modules: {e}")
+            print("   The adapter still merges, but SGLang will refuse to load it.")
         is_gemma4 = "gemma-4" in base_model_id.lower()
         wants_merge = bool(merged_config_data.get("post_training_merge", True))
 

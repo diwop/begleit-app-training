@@ -40,3 +40,5 @@ huggingface/
 .ds-config-train*.json
 
 .
+# direnv: holds RUNPOD_API_KEY
+.envrc

@@ -43,15 +43,29 @@ class Case:
     reference: Optional[str] = None
 
 
+def engine_loadable(config_path: Path) -> bool:
+    """SGLang accepts a list of module names, or the literals 'all' / 'all-linear'.
+
+    A regex string is valid for PEFT but fails at load with:
+        Only 'all' or 'all-linear' can be used as the string for target module
+    """
+    targets = json.loads(config_path.read_text(encoding="utf-8"))["target_modules"]
+    return isinstance(targets, list) or targets in ("all", "all-linear")
+
+
 def resolve_adapter(local_dir: Path) -> Path:
     """Use the adapter on the volume, else pull the newest one from S3.
 
     Only the top-level adapter files are fetched; the per-step checkpoint directories
     hold DeepSpeed optimizer states worth several GB and are useless for inference.
     """
-    if (local_dir / "adapter_config.json").exists():
-        print(f"✅ Using local adapter: {local_dir}", flush=True)
-        return local_dir
+    local_config = local_dir / "adapter_config.json"
+    if local_config.exists():
+        if engine_loadable(local_config):
+            print(f"✅ Using local adapter: {local_dir}", flush=True)
+            return local_dir
+        print(f"⚠️  Local adapter at {local_dir} has a regex target_modules that SGLang "
+              f"cannot load. Re-fetching from S3.", flush=True)
 
     bucket = os.environ.get("S3_BUCKET")
     if not bucket:
@@ -87,8 +101,11 @@ def resolve_adapter(local_dir: Path) -> Path:
             client.download_file(bucket, key, str(target))
             downloaded += 1
 
-    if not (local_dir / "adapter_config.json").exists():
+    if not local_config.exists():
         sys.exit(f"❌ Downloaded {downloaded} objects from {newest} but found no adapter_config.json")
+    if not engine_loadable(local_config):
+        sys.exit(f"❌ Adapter in {newest} still has a regex target_modules. Run "
+                 f"src-train/expand_targets.py on it before serving.")
     return local_dir
 
 
