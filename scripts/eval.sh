@@ -31,11 +31,42 @@ export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export TORCH_NCCL_BLOCKING_WAIT=1
 export HF_HOME=${HF_HOME:-/app/huggingface_cache}
 
+# /app is MooseFS, a network filesystem. Model weights read fine from it, but torch.compile
+# writes thousands of small kernel files and fails there with OSError: [Errno 5]. launch.sh
+# points TMPDIR at /app, which inductor inherits, so the cache dirs must be set explicitly
+# back to the local container disk.
+export TMPDIR=/tmp
+export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-/root/.cache/inductor}
+export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-/root/.cache/triton}
+export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-/root/.cache/vllm}
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT"
+
+# Compiling LoRA-specialised CUDA graphs at 51 batch sizes costs ~20 min and is pointless
+# for a 3-prompt smoke test. Set SMOKE_EAGER=0 to exercise the compiled production path.
+export SMOKE_EAGER=${SMOKE_EAGER:-1}
+
 # 'auto' picks whichever engine the image provides. SMOKE_ADAPTER_S3 pins the S3 prefix:
 # without it the newest '*_run/' wins, which has silently tested the wrong adapter before.
 export SMOKE_ENGINE=${SMOKE_ENGINE:-auto}
 export SMOKE_ADAPTER_S3=${SMOKE_ADAPTER_S3:-}
 export SMOKE_BASE=${SMOKE_BASE:-google/gemma-4-26b-a4b-it}
+
+# A failed vLLM run orphans its EngineCore, which holds the whole card (~75 GB) and makes
+# every later run fail on memory instead of on whatever is actually being tested.
+echo "Reclaiming GPU from any orphaned engine processes..."
+pkill -9 -f 'VLLM::EngineCore' 2>/dev/null || true
+pkill -9 -f 'smoke_adapter\.py' 2>/dev/null || true
+pkill -9 -f 'sglang.*scheduler' 2>/dev/null || true
+sleep 5
+
+FREE_MIB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1)
+echo "  free VRAM: ${FREE_MIB} MiB"
+if [ "${FREE_MIB:-0}" -lt 40000 ]; then
+    echo "[FATAL] Only ${FREE_MIB} MiB free; the model needs far more."
+    echo "        Something outside this script holds the GPU. Check:"
+    echo "          nvidia-smi ; ps aux | grep -E 'EngineCore|python'"
+    exit 1
+fi
 
 echo "=== adapter smoke test ==="
 echo "  engine : ${SMOKE_ENGINE}"
