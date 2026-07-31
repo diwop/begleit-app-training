@@ -32,7 +32,6 @@ import json
 import statistics
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Sequence
 
@@ -106,8 +105,15 @@ class DroppedPair:
 
 @dataclass
 class Manifest:
-    """Written next to the splits and copied into the adapter's run_manifest.json."""
-    created_utc: str
+    """Written next to the splits and copied into the adapter's run_manifest.json.
+
+    Deliberately carries no timestamp. It is a DVC output, and a field that changes on
+    every run makes the stage non-reproducible: `dvc repro` then always emits a new blob,
+    the lock file points at a hash nobody pushed, and the next `dvc pull` fails with
+    "Checkout failed ... Is your cache up to date?" -- which is exactly how a RunPod run
+    died. When this file was built is recoverable from git and from dvc.lock; the training
+    run's own timestamp lives in run_manifest.json, which is not a DVC output.
+    """
     split_salt: str
     ratios: Dict[str, float]
     tokenizer: str
@@ -313,7 +319,6 @@ def main() -> None:
     write_split(by_split["holdout"], args.out_dir / "eval" / "holdout.jsonl")
 
     manifest = Manifest(
-        created_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         split_salt=SPLIT_SALT,
         ratios=asdict(ratios),
         tokenizer=args.tokenizer,
