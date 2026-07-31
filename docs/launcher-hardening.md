@@ -124,3 +124,7 @@ Three images behaved three different ways, and each difference cost a run:
     declares `dvc[s3]` so the pull works, and the step stays non-fatal regardless: the eval
     image has no environment of its own, so anything not declared in `src-eval/pyproject.toml`
     simply is not there.
+32. **A multi-GB model download is invisible in a log file.** `huggingface_hub` draws tqdm
+    bars with carriage returns, which do not survive redirection, so a 51 GB fetch looks
+    exactly like a hung process. `scripts/lib/progress.sh` samples the cache directory
+    instead and reports GiB, MB/s and the number of `*.incomplete` blobs still in flight.

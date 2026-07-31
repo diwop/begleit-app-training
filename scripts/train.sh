@@ -31,10 +31,16 @@ if [ "$IS_LOCAL" = "0" ]; then
 fi
 
 echo "==> training ($PLATFORM, config=$TRAIN_CONFIG)"
+# src-train/train.py pre-stages the base weights before the first step, which is the same
+# silent multi-GB wait the eval has.
+# shellcheck source=lib/progress.sh
+source scripts/lib/progress.sh
+progress_start "$LOG_FILE"
 set +e
 "${NICE[@]}" "$PY_TRAIN" -u src-train/train.py 2>&1 | tee "$LOG_FILE"
 TRAIN_EXIT_CODE=${PIPESTATUS[0]}
 set -e
+progress_stop
 
 # shellcheck source=lib/finish.sh
 source scripts/lib/finish.sh

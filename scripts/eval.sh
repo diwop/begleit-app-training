@@ -71,10 +71,14 @@ fi
 echo "==> adapter smoke test ($PLATFORM)"
 echo "  base   : ${SMOKE_BASE}"
 echo "  adapter: ${SMOKE_ADAPTER}"
+# shellcheck source=lib/progress.sh
+source scripts/lib/progress.sh
+progress_start "$LOG_FILE"
 set +e
 "${NICE[@]}" "$PY_EVAL" -u src-eval/smoke_adapter.py 2>&1 | tee "$LOG_FILE"
 EVAL_EXIT_CODE=${PIPESTATUS[0]}
 set -e
+progress_stop
 
 # shellcheck source=lib/finish.sh
 source scripts/lib/finish.sh
