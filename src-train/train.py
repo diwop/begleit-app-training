@@ -46,6 +46,46 @@ class SyncTarget:
     s3_prefix: str
 
 
+def print_environment() -> None:
+    """Record what this run is actually made of, before anything can go wrong.
+
+    A run that worked and a run that failed could not be compared today, because neither
+    log contained a single package version. The image was not the variable -- the tag's
+    digest had not moved in five weeks -- but that took a Docker Hub query to establish,
+    and it would not have caught the real risk: `scripts/setup.sh` runs
+    `uv pip install src-train/` on top of the image at every pod start, and
+    src-train/pyproject.toml pins almost nothing. Two pods from the same image can
+    therefore hold different transformers, peft or deepspeed, and nothing would say so.
+    """
+    import importlib.metadata as md
+
+    parts = []
+    for name in ("torch", "transformers", "accelerate", "deepspeed", "peft", "trl",
+                 "axolotl", "datasets", "tokenizers", "numpy", "huggingface-hub"):
+        try:
+            parts.append(f"{name}=={md.version(name)}")
+        except Exception:  # noqa: BLE001 -- absence is itself worth recording
+            parts.append(f"{name}=absent")
+
+    # Never allowed to fail. A run must not die because its diagnostics could not be
+    # collected -- and under pytest `torch` is a MagicMock, so device_count() is not an int.
+    cuda = "cuda=unavailable"
+    try:
+        if torch.cuda.is_available():
+            count = int(torch.cuda.device_count())
+            names = {torch.cuda.get_device_name(i) for i in range(count)}
+            cuda = f"cuda={torch.version.cuda} gpus={count} [{', '.join(sorted(names))}]"
+    except Exception as e:  # noqa: BLE001
+        cuda = f"cuda=unreadable ({type(e).__name__})"
+
+    print("\n" + "=" * 60)
+    print("🧾 ENVIRONMENT")
+    print("=" * 60)
+    print("  " + "  ".join(parts))
+    print(f"  {cuda}")
+    print("=" * 60 + "\n", flush=True)
+
+
 def _merge_by_step(entries: Iterable[dict]) -> List[dict]:
     """One row per evaluation, not two.
 
@@ -542,6 +582,7 @@ def main():
     # Enable blocking waits for NCCL to help diagnose hangs/timeouts
     os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
+    print_environment()
     accelerator, num_gpus = detect_accelerator()
     if accelerator == "cuda":
         vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
