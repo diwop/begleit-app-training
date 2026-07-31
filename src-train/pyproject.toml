@@ -11,6 +11,11 @@ dependencies = [
     "textstat>=0.7.13",
     "awscli",
     "boto3",
+    # Parallel range requests within a single file. The base model is a dozen large
+    # shards, so the default downloader effectively transfers them one at a time and a
+    # single slow connection stalls the whole 51 GB. A tiny Rust wheel with no Python
+    # dependencies, so it cannot disturb the resolution described below.
+    "hf_transfer",
     "transformers",
     "peft",
     "llmcompressor",

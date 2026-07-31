@@ -192,6 +192,23 @@ def pre_download_models(pipeline_configs):
                 # HF_TOKEN and HF_HOME from the environment.
                 from huggingface_hub import snapshot_download
 
+                # The 51 GB base model lives in a dozen large shards, so the default
+                # 8 download workers give no parallelism worth having -- the reporter
+                # showed "1 file(s) in flight" for most of every run, and a single
+                # connection dropping to 9 MB/s stalled everything behind it while
+                # another run of the same download peaked at 481 MB/s. hf_transfer
+                # issues parallel range requests WITHIN one file, which is the shape
+                # of this problem. Opt in only when it is importable: huggingface_hub
+                # raises if the flag is set without it.
+                try:
+                    import hf_transfer  # noqa: F401
+
+                    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+                    print("   using hf_transfer for the download", flush=True)
+                except ImportError:
+                    print("   hf_transfer not installed; falling back to the default "
+                          "downloader (expect a slow, serial transfer)", flush=True)
+
                 snapshot_download(base_model_str)
 
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
