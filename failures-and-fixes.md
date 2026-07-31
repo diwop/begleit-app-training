@@ -165,8 +165,17 @@
   * *A degenerate matmul.* `ROPE_DEBUG=1` printed the arguments: `m=256` (= `global_head_dim`/2, correct), `n=1791`, `k=1`, one device, sane strides. Valid, and rejected anyway.
   * *ZeRO-3 CPU offload.* `DEEPSPEED_OFFLOAD=0` moved `alloc` from 24 MiB to 49539 MiB — the weights became resident, and it still crashed.
   * *TF32, or a regression in the mutable `main` image tag.* Refuted by the successful run of the same morning: same image, `cudaDriverVersion 13000`, `NCCL 2.28.9+cuda13.0`, sm_120 and `tf32: true`, trained to completion. The rotary embedding's fp32 matmul ran thousands of times there.
-* **What is actually established**: cuBLAS is unusable by the time evaluation reaches that line. The probe runs `ones(2,2) @ ones(2,2)` on the same device immediately beforehand and it fails with the same error, so the rotary embedding is a bystander and its arguments were never relevant. Training on this exact image works; evaluation is the only new thing in the branch that introduced it, and its traceback contains no DeepSpeed engine frame — HF's `prediction_step` calls the module directly rather than through the engine.
-* **Fix**: none yet. `EVAL_STRATEGY=no` gets a trained adapter out of a pod meanwhile, at the cost of every validation number.
+* **Root cause — not ours.** `src-train/cuda_smoke.py`, in a fresh process with nothing imported but torch, no model and no data:
+
+      [0] alloc        PASS   NVIDIA H100 80GB HBM3
+      [1] matmul_fp32  FAIL   CUBLAS_STATUS_INVALID_VALUE
+
+  The GPU allocates memory and cannot multiply two 2x2 matrices. Three lines of Python reproduce it. Nothing in this repository is involved.
+
+* **Why it took a day to see.** The failure surfaced at the first fp32 matmul of the first forward pass, which happens to be Gemma 4's rotary embedding, inside an evaluation that this branch had just introduced. Everything pointed at the new code. Seven hypotheses were tested on GPU pods and refuted one at a time — hardware, GPU count, VRAM, sequence length, token ids, both attention implementations, TF32, ZeRO-3 offload, the DeepSpeed engine, the image, PyPI drift. The decisive test was the cheapest one available and was run last: check out the last commit that worked and run it unchanged. It failed too, on the same data, which excluded the entire branch in a single run.
+* **What made it hard to see**: the same commit, image digest (`fca53a8a...`, unchanged since 2026-06-24), driver (`13000`) and NCCL (`2.28.9+cuda13.0`) trained successfully at 08:39 UTC and failed from ~15:20 UTC onward, across sm_89, sm_90 and sm_120. Nothing observable in the container changed. The fault is on the host side and appeared during the day.
+* **Fix**: none in this repo. Try `latest-py3.12-cu128-2.10.0` (same torch 2.10.0, CUDA 12.8) in `README.md`'s `train_image` — if `cuda_smoke.py` passes there, CUDA 13.0's cuBLAS is the culprit and the image pin is the workaround. Otherwise it is a RunPod support ticket, and `cuda_smoke.py` is the reproduction to attach.
+* **Two habits worth keeping**: run the last-known-good commit *first* when something that used to work stops working; and prefer the dated `main-YYYYMMDD-*` image tags over the mutable `main-*`, so "same image" can be asserted rather than checked against Docker Hub after the fact.
 
 # Evaluating
 
