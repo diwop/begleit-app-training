@@ -1,4 +1,5 @@
 # --- src/train_patched.py ---
+import os
 import sys
 import fire
 
@@ -201,6 +202,44 @@ try:
     print("🔧 MONKEYPATCH: Successfully bypassed validate_quantization_for_training")
 except Exception as e:
     print(f"⚠️ Warning: Failed to apply quantization validation monkeypatch: {e}")
+
+# --- ROPE_DEBUG=1: report the shapes entering the rotary embedding, once ---
+# Every evaluation so far has died at
+#     modeling_gemma4.py:1170  freqs = inv_freq_expanded.float() @ position_ids_expanded.float()
+#     RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE ... cublasSgemm
+# on four hardware/attention combinations. CUBLAS_STATUS_INVALID_VALUE is a host-side
+# argument check, so one of m/n/k is zero -- but which is a guess until someone prints it.
+# m comes from inv_freq, n from position_ids. Under ZeRO-3 an ungathered parameter has a
+# zero-element .data, which is the shape this would take if the eval forward is bypassing
+# the DeepSpeed engine (its frame is absent from the traceback).
+if os.environ.get("ROPE_DEBUG") == "1":
+    try:
+        from transformers.models.gemma4 import modeling_gemma4
+
+        _rope_cls = modeling_gemma4.Gemma4RotaryEmbedding
+        _rope_orig_forward = _rope_cls.forward
+        _rope_seen = []
+
+        def _rope_reporting_forward(self, x, position_ids, *args, **kwargs):
+            if not _rope_seen:
+                _rope_seen.append(True)
+                parts = [f"args={args}"]
+                for name, tensor in (("x", x), ("position_ids", position_ids)):
+                    parts.append(f"{name} shape={tuple(tensor.shape)} numel={tensor.numel()} "
+                                 f"dtype={tensor.dtype} dev={tensor.device}")
+                for name, buf in self.named_buffers(recurse=False):
+                    parts.append(f"BUF {name} shape={tuple(buf.shape)} numel={buf.numel()} "
+                                 f"dev={buf.device}")
+                for name, param in self.named_parameters(recurse=False):
+                    parts.append(f"PARAM {name} shape={tuple(param.shape)} "
+                                 f"numel={param.numel()} ds_status={getattr(param, 'ds_status', 'n/a')}")
+                print("🔬 ROPE FIRST CALL || " + " || ".join(parts), flush=True)
+            return _rope_orig_forward(self, x, position_ids, *args, **kwargs)
+
+        _rope_cls.forward = _rope_reporting_forward
+        print("🔬 MONKEYPATCH: ROPE_DEBUG=1, rotary embedding reports shapes on first call")
+    except Exception as e:
+        print(f"⚠️ Warning: could not install the rotary-embedding reporter: {e}")
 
 original_train = axolotl.train.train
 

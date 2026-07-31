@@ -311,11 +311,22 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
     for env_key, cfg_key, parse in (
         ("ATTN_IMPLEMENTATION", "attn_implementation", str),
         ("GEMMA4_HYBRID_ATTN", "gemma4_hybrid_attn_impl", lambda v: v == "1"),
+        ("EVAL_STRATEGY", "eval_strategy", str),
     ):
         raw = os.environ.get(env_key, "")
         if raw:
             merged_cfg[cfg_key] = parse(raw)
             print(f"⚙️  {env_key}={raw} overrides {cfg_key} -> {merged_cfg[cfg_key]}", flush=True)
+
+    # EVAL_STRATEGY=no is the escape hatch while evaluation is broken: it gets a trained
+    # adapter out of a pod that would otherwise die at step 0. It has to drag
+    # load_best_model_at_end with it -- HF refuses the combination, since there would be no
+    # metric to choose a checkpoint by. Nothing is measured in this mode; the run produces
+    # weights and no evidence that they are any good.
+    if str(merged_cfg.get("eval_strategy", "")).lower() in ("no", "none"):
+        merged_cfg["load_best_model_at_end"] = False
+        print("⚠️  eval_strategy=no: load_best_model_at_end forced off, and this run "
+              "produces NO validation numbers at all.", flush=True)
 
     # Extract DeepSpeed tuning settings from Axolotl YAML if configured
     cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
