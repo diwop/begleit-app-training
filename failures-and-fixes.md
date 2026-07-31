@@ -156,6 +156,18 @@
 * **Fix**: `scripts/train.sh` now fingerprints `data/train/dataset.jsonl` and `data/train/validation.jsonl` with `shasum -a 256`, stores it in `last_run_prepared/.data-fingerprint`, and deletes the directory when it no longer matches. A content hash rather than an mtime comparison, because `dvc checkout` rewrites those files and mtimes would force a full re-tokenisation of the corpus on every pull.
 * **Scope**: local iteration only. On RunPod the container clones the repo fresh and `last_run_prepared/` is gitignored, so the cache is always cold there and no published adapter is affected.
 
+### Iteration 15: every evaluation dies in cuBLAS, and five plausible causes were wrong
+* **Error**: `RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE when calling cublasSgemm(...)` at `modeling_gemma4.py:1170`, the rotary embedding, on the FIRST evaluation — before any training step. Reproduced on 1x H100 (sm_90), 1x RTX PRO 6000 Blackwell (sm_120) and 2x L40S (sm_89, two ranks).
+* **Not the cause** — each of these was tested on a pod and refuted, so do not spend a run on them again:
+  * *Hardware, GPU count, VRAM, sequence length.* Four combinations, identical failure. The first eval sample is ~3.5k tokens while training samples in the same run reach 10.8k.
+  * *The data.* No empty content in any of the 608 records.
+  * *Gemma 4's hybrid attention.* `ATTN_IMPLEMENTATION=sdpa GEMMA4_HYBRID_ATTN=0` crashes identically, and does not even OOM.
+  * *A degenerate matmul.* `ROPE_DEBUG=1` printed the arguments: `m=256` (= `global_head_dim`/2, correct), `n=1791`, `k=1`, one device, sane strides. Valid, and rejected anyway.
+  * *ZeRO-3 CPU offload.* `DEEPSPEED_OFFLOAD=0` moved `alloc` from 24 MiB to 49539 MiB — the weights became resident, and it still crashed.
+  * *TF32, or a regression in the mutable `main` image tag.* Refuted by the successful run of the same morning: same image, `cudaDriverVersion 13000`, `NCCL 2.28.9+cuda13.0`, sm_120 and `tf32: true`, trained to completion. The rotary embedding's fp32 matmul ran thousands of times there.
+* **What is actually established**: cuBLAS is unusable by the time evaluation reaches that line. The probe runs `ones(2,2) @ ones(2,2)` on the same device immediately beforehand and it fails with the same error, so the rotary embedding is a bystander and its arguments were never relevant. Training on this exact image works; evaluation is the only new thing in the branch that introduced it, and its traceback contains no DeepSpeed engine frame — HF's `prediction_step` calls the module directly rather than through the engine.
+* **Fix**: none yet. `EVAL_STRATEGY=no` gets a trained adapter out of a pod meanwhile, at the cost of every validation number.
+
 # Evaluating
 
 ## Gemma 4
