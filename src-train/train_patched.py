@@ -325,12 +325,42 @@ if os.environ.get("EVAL_VIA_ENGINE", "1") == "1":
 
         def _prediction_step_via_engine(self, model, inputs, *args, **kwargs):
             engine = getattr(self, "model_wrapped", None)
+
+            # Dump the whole state once, unconditionally. The substitution above silently
+            # did nothing on the first attempt because its condition was false, and one
+            # boolean per pod run is too slow a way to find out which one.
+            if not _engine_note:
+                _engine_note.append(True)
+                import torch as _t
+
+                bits = [
+                    f"is_deepspeed_enabled={getattr(self, 'is_deepspeed_enabled', 'MISSING')}",
+                    f"model={type(model).__name__}",
+                    f"model_wrapped={type(engine).__name__ if engine is not None else None}",
+                    f"same_object={engine is model}",
+                    f"self.deepspeed={type(getattr(self, 'deepspeed', None)).__name__}",
+                ]
+                try:
+                    plugin = self.accelerator.state.deepspeed_plugin
+                    bits.append(f"ds_plugin={plugin is not None} "
+                                f"stage={getattr(plugin, 'zero_stage', '?') if plugin else '-'}")
+                except Exception as exc:  # noqa: BLE001
+                    bits.append(f"ds_plugin=ERR {type(exc).__name__}")
+                bits.append(f"accelerator_models={len(getattr(self.accelerator, '_models', []))}")
+                try:
+                    param = next(iter(model.parameters()))
+                    bits.append(f"first_param numel={param.numel()} "
+                                f"shape={tuple(param.shape)} dev={param.device} "
+                                f"ds_status={getattr(param, 'ds_status', 'n/a')}")
+                except Exception as exc:  # noqa: BLE001
+                    bits.append(f"param_probe=ERR {type(exc).__name__}")
+                bits.append(f"cuda_alloc={_t.cuda.memory_allocated() >> 20}MiB")
+                print("🔬 EVAL STATE || " + " || ".join(bits), flush=True)
+
             if getattr(self, "is_deepspeed_enabled", False) and engine is not None \
                     and engine is not model:
-                if not _engine_note:
-                    _engine_note.append(True)
-                    print(f"🔧 eval: routing through {type(engine).__name__} instead of "
-                          f"{type(model).__name__}", flush=True)
+                print(f"🔧 eval: routing through {type(engine).__name__} instead of "
+                      f"{type(model).__name__}", flush=True)
                 model = engine
             return _orig_prediction_step(self, model, inputs, *args, **kwargs)
 
