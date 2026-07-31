@@ -17,6 +17,33 @@ bash scripts/setup.sh
 LOG_FILE="${LOG_FILE:-$OUTPUT_ROOT/training_run.log}"
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# Pre-flight: can this GPU multiply two 2x2 matrices?
+#
+# On 2026-07-31 a series of pods could not. `cublasSgemm` returned
+# CUBLAS_STATUS_INVALID_VALUE for any fp32 matmul, while allocation worked fine. Two pods
+# with the same image, the same driver and the same card model differed: one passed, one
+# failed. Nothing in this repo is in the call path -- it is four lines of torch.
+#
+# Without this gate the symptom appears ~20 minutes later, after a 51 GB model download,
+# as a crash inside Gemma 4's rotary embedding -- which reads like a model bug and cost a
+# day of debugging exactly that. Ten seconds here, before anything is downloaded.
+# src-train/cuda_smoke.py is the same check with twelve escalating stages.
+if [ "$IS_LOCAL" = "0" ]; then
+    PREFLIGHT_ERR="$(mktemp)"
+    if ! "$PY_TRAIN" -c "import torch
+x = torch.ones(2, 2, device=torch.device(0))
+assert x.matmul(x).sum().item() == 8.0" 2>"$PREFLIGHT_ERR"; then
+        echo "❌ PRE-FLIGHT FAILED: this GPU cannot perform a 2x2 fp32 matmul."
+        sed 's/^/    /' "$PREFLIGHT_ERR" | tail -3
+        echo "   The pod is faulty; the code is not involved. Destroy it and start another."
+        echo "   For detail: $PY_TRAIN src-train/cuda_smoke.py"
+        rm -f "$PREFLIGHT_ERR"
+        exit 1
+    fi
+    rm -f "$PREFLIGHT_ERR"
+    echo "✅ pre-flight: fp32 matmul works on this GPU"
+fi
+
 # Named explicitly, never a bare `dvc pull`: that fetches every out in the pipeline,
 # including data/eval/holdout.jsonl -- the one file this container must not have.
 TRAIN_DATA=(data/train/dataset.jsonl data/train/validation.jsonl data/split_manifest.json)
