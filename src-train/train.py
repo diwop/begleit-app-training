@@ -332,6 +332,23 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
     cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
     offload_optimizer = merged_cfg.get("deepspeed_offload_optimizer", False)
     offload_param = merged_cfg.get("deepspeed_offload_param", False)
+
+    # DEEPSPEED_OFFLOAD=0 keeps parameters and optimizer state on the GPU.
+    #
+    # The evaluation crash is not a bad matmul: with ROPE_DEBUG the reporter ran
+    # `ones(2,2) @ ones(2,2)` on the same device immediately beforehand and got the same
+    # CUBLAS_STATUS_INVALID_VALUE, so cuBLAS is unusable by then and the rotary embedding
+    # is a bystander. The same report showed only 24 MiB allocated on a card holding a 26B
+    # model -- the weights are not resident. With offload on, ZeRO-3 keeps them in CPU
+    # memory and gathers them through the DeepSpeed engine, and the engine's frame is
+    # absent from every eval traceback: HF's prediction_step calls the module directly.
+    #
+    # These settings were written for 2x L40S (2x44 GB), where a 52 GB bf16 model has to be
+    # offloaded. On a single 96 GB card it fits, so this is worth having as a switch
+    # regardless of whether it turns out to be the fix.
+    if os.environ.get("DEEPSPEED_OFFLOAD") == "0":
+        offload_param = offload_optimizer = False
+        print("⚙️  DEEPSPEED_OFFLOAD=0: parameters and optimizer stay on the GPU", flush=True)
     param_persistence_threshold = merged_cfg.get("deepspeed_param_persistence_threshold", "auto")
 
     # DeepSpeed is CUDA-only. On Metal it is not merely unnecessary, it cannot load, so
