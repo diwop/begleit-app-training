@@ -28,7 +28,7 @@ lora_target_modules: 'model\.language_model\.layers\.[\d]+\.(_checkpoint_wrapped
 
 # The adapter (~74 MB) is always published. The merged FP8 model is ~28 GB and costs a
 # merge plus a quantization pass; set false once eval can serve the adapter directly.
-post_training_merge: true
+post_training_merge: false
 
 unsloth: false
 load_in_8bit: false # Disabled: Fits natively sharded under ZeRO-3

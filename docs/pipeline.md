@@ -34,6 +34,7 @@ The training and evaluation pipeline is optimized for NVIDIA L40S GPUs.
 
     bash scripts/start_runpod.sh train
     bash scripts/start_runpod.sh eval
+    bash scripts/start_runpod.sh train attach   # just watch a run that is already going
 
 `scripts/start_runpod.sh` reuses an existing GPU pod if there is one, otherwise it lists the
 secure-cloud offers that clear all three filters and creates one only after you confirm:

@@ -17,12 +17,42 @@ cd "$(dirname "$0")/.."
 # shellcheck source=lib/runpod.sh
 source scripts/lib/runpod.sh
 
+usage() {
+    echo "usage: bash scripts/start_runpod.sh train|eval [attach] [--keep-alive]" >&2
+    echo "  attach        tail a run that is already going, change nothing" >&2
+    echo "  --keep-alive  leave the pod running after the run, for debugging" >&2
+}
+
 MODE="${1:-}"
 case "$MODE" in
     train)                MODE=train; IMAGE_KEY=train_image ;;
     eval|evaluation|test) MODE=eval;  IMAGE_KEY=eval_image ;;
-    *) echo "usage: bash scripts/start_runpod.sh train|eval" >&2; exit 1 ;;
+    *) usage; exit 1 ;;
 esac
+shift
+
+# `attach` only tails an existing run. Without it, the sole way back to a running job was to
+# run this script again, which restarts the container and kills the very run you wanted to
+# look at.
+ATTACH=0
+KEEP_ALIVE_FLAG=0
+for arg in "$@"; do
+    case "$arg" in
+        attach)                        ATTACH=1 ;;
+        --keep-alive|--keep-running)   KEEP_ALIVE_FLAG=1 ;;
+        *) echo "❌ unknown argument: $arg" >&2; usage; exit 1 ;;
+    esac
+done
+
+# Always sent explicitly, never left to the pod's history. Reuse merges our env over the
+# pod's existing env, so omitting this would let a pod created back when the template said
+# KEEP_ALIVE=true keep running forever -- the default has to be enforced, not just declared.
+# An exported KEEP_ALIVE=true still counts as an explicit opt-in.
+if [ "$KEEP_ALIVE_FLAG" = "1" ] || [ "${KEEP_ALIVE:-}" = "true" ]; then
+    KEEP_ALIVE=true
+else
+    KEEP_ALIVE=false
+fi
 
 # VRAM in total, not per card, and not a fixed number of cards. Runs that worked: 1x RTX
 # PRO 6000 (96 GB), 2x L40S (2x48), and 1x H100 SXM (80) as the pricier option. Gemma runs
@@ -63,18 +93,38 @@ FP8_GPUS=(
     "NVIDIA H200 NVL"
 )
 GPU_ALLOWLIST_JSON="$(printf '%s\n' "${FP8_GPUS[@]}" | jq -R . | jq -sc .)"
-CONTAINER_DISK_GB="${CONTAINER_DISK_GB:-100}"
-VOLUME_GB="${VOLUME_GB:-250}"          # the bf16 merge needs ~130 GB transiently (point 21)
-VOLUME_MOUNT="${VOLUME_MOUNT:-/app}"   # OUTPUT_ROOT and HF_HOME both live under /app
 POD_NAME="${POD_NAME:-begleit-$MODE}"
 REPO_URL="${REPO_URL:-https://github.com/diwop/begleit-app-training.git}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
-POD_LOG="/var/log/begleit-$MODE.log"
-MAX_POD_HOURS="${MAX_POD_HOURS:-12}"   # backstop only; well above any run this repo does
+# Backstop only, and deliberately close to the real runtimes: training takes ~15 min and an
+# eval ~25 min (~45 with torch.compile), so 2h is generous while capping a stuck pod at ~$4
+# instead of ~$24.
+MAX_POD_HOURS="${MAX_POD_HOURS:-2}"
 
 rp_preflight
 trap 'rm -f "$RP_CODE_FILE"' EXIT
 
+# ------------------------------------------------------------------------------ template
+# Disk, volume, mount path, ports and -- above all -- the secrets come from the RunPod
+# template, not from this script. HF_TOKEN and the AWS keys are stored there as
+# `{{ RUNPOD_SECRET_* }}` references, which RunPod resolves for the template. We never copy
+# those strings into the pod's own env: the documentation only describes them resolving at
+# template level, so a copy could travel as literal text and fail silently.
+TEMPLATE="$(rp_find_template "${TEMPLATE_ID:-}" "$MODE")" || exit 1
+TEMPLATE_ID="$(jq -r '.id' <<<"$TEMPLATE")"
+TEMPLATE_NAME="$(jq -r '.name' <<<"$TEMPLATE")"
+TEMPLATE_IMAGE="$(jq -r '.imageName // ""' <<<"$TEMPLATE")"
+TEMPLATE_ENV_KEYS="$(jq -c '(.env // {}) | keys' <<<"$TEMPLATE")"
+VOLUME_MOUNT="$(jq -r '.volumeMountPath // "/app"' <<<"$TEMPLATE")"
+
+# On the volume, not on the container disk: /var/log dies with the pod, and the pod stops
+# itself the moment the run ends -- which deleted the log exactly when it was worth reading.
+POD_LOG="$VOLUME_MOUNT/logs/pod-$MODE.log"
+
+# The image is the one place the repo overrules the template. README.md is the declared
+# source of truth and scripts/lib/platform.sh already refuses to run when the pinned vLLM
+# release drifts from it; the eval template still names the SGLang image this project
+# abandoned.
 IMAGE="$(sed -n "s/^$IMAGE_KEY: *//p" README.md | head -1)"
 [ -n "$IMAGE" ] || { echo "❌ no '$IMAGE_KEY' in the README.md front matter" >&2; exit 1; }
 
@@ -84,14 +134,16 @@ IMAGE="$(sed -n "s/^$IMAGE_KEY: *//p" README.md | head -1)"
 # Test the output, not the exit code: a pipeline reports the exit code of `cut`, so
 # `if ! REMOTE_SHA="$(git ls-remote ... | cut -f1)"` never fires and the guard is decorative.
 REMOTE_SHA="$(git ls-remote origin "refs/heads/$BRANCH" 2>/dev/null | head -1 | cut -f1)"
-if [ -z "$REMOTE_SHA" ]; then
+if [ "$ATTACH" = "0" ] && [ -z "$REMOTE_SHA" ]; then
     echo "❌ no branch '$BRANCH' on origin. The pod clones from GitHub; push it first." >&2
     exit 1
 fi
-if [ "$REMOTE_SHA" != "$(git rev-parse HEAD)" ]; then
-    echo "⚠️  origin/$BRANCH is at ${REMOTE_SHA:0:7}, your HEAD at $(git rev-parse --short HEAD)."
+if [ "$ATTACH" = "0" ]; then
+    if [ "$REMOTE_SHA" != "$(git rev-parse HEAD)" ]; then
+        echo "⚠️  origin/$BRANCH is at ${REMOTE_SHA:0:7}, your HEAD at $(git rev-parse --short HEAD)."
+    fi
+    [ -n "$(git status --porcelain)" ] && echo "⚠️  uncommitted changes: the pod runs origin/$BRANCH, not your working tree."
 fi
-[ -n "$(git status --porcelain)" ] && echo "⚠️  uncommitted changes: the pod runs origin/$BRANCH, not your working tree."
 
 PUB_KEY_FILE="${SSH_PUBKEY:-$HOME/.ssh/id_ed25519.pub}"
 [ -f "$PUB_KEY_FILE" ] || PUB_KEY_FILE="$(ls "$HOME"/.ssh/*.pub 2>/dev/null | head -1)"
@@ -100,10 +152,15 @@ if [ -z "$PUB_KEY_FILE" ] || [ ! -f "$PUB_KEY_FILE" ]; then
     exit 1
 fi
 PUBLIC_KEY="$(cat "$PUB_KEY_FILE")"
+# Log in with the matching private key and nothing else -- see rp_ssh.
+RP_SSH_KEY="${PUB_KEY_FILE%.pub}"
 
 # Not a pre-flight abort, on purpose: gating is a property of the repo, not of the name --
-# src-train/train.py makes the same call. Only the 26B base is gated.
-[ -n "${HF_TOKEN:-}" ] || echo "⚠️  HF_TOKEN is unset; gated base models (gemma-4-26b-a4b-it) will fail to download."
+# src-train/train.py makes the same call, and gemma-4-26b-a4b-it in fact downloaded without
+# a token on 2026-07-31. Mistral still needs one.
+if [ "$ATTACH" = "0" ] && [ -z "${HF_TOKEN:-}" ]; then
+    echo "⚠️  HF_TOKEN is unset; a gated base model would fail to download."
+fi
 
 # ---------------------------------------------------------------------------- start cmd
 # Never inherit the image default (point 1). The three images we use behave three different
@@ -111,7 +168,7 @@ PUBLIC_KEY="$(cat "$PUB_KEY_FILE")"
 read -r -d '' START_SCRIPT <<'POD_START' || true
 set -x
 export HOME="${HOME:-/root}"
-mkdir -p /runner /var/log
+mkdir -p /runner /var/log "$(dirname "@POD_LOG@")"
 
 # The images disagree about what they ship: Axolotl has git and sshd, the vLLM image has
 # neither, nor curl. Probe, install only the gap (point 2).
@@ -142,8 +199,11 @@ curl -s --request POST "https://api.runpod.io/graphql" \
 
 curl -fsSL "@LAUNCH_URL@" -o /runner/launch.sh
 
+# Append, with a marker: the log now survives a stop, so keep the earlier runs too.
+echo "===== @MODE@ run started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" >> "@POD_LOG@"
+
 # setsid: the run must outlive both this start command and any SSH session (point 13).
-setsid bash /runner/launch.sh </dev/null >"@POD_LOG@" 2>&1 &
+setsid bash /runner/launch.sh </dev/null >>"@POD_LOG@" 2>&1 &
 
 # Never exit. A finished pipeline has to leave the container reachable (point 4).
 sleep infinity
@@ -153,9 +213,18 @@ LAUNCH_URL="${REPO_URL%.git}"
 LAUNCH_URL="${LAUNCH_URL/github.com/raw.githubusercontent.com}/$BRANCH/scripts/launch.sh"
 START_SCRIPT="${START_SCRIPT//@LAUNCH_URL@/$LAUNCH_URL}"
 START_SCRIPT="${START_SCRIPT//@POD_LOG@/$POD_LOG}"
+START_SCRIPT="${START_SCRIPT//@MODE@/$MODE}"
 START_SCRIPT="${START_SCRIPT//@MAX_POD_HOURS@/$MAX_POD_HOURS}"
 START_SCRIPT="${START_SCRIPT//@MAX_POD_SECONDS@/$((MAX_POD_HOURS * 3600))}"
-START_CMD_JSON="$(jq -nc --arg s "$START_SCRIPT" '["bash", "-c", $s]')"
+# The entrypoint has to be overridden as well, not just the command. dockerStartCmd becomes
+# the container's CMD, and Docker APPENDS the CMD to the image's ENTRYPOINT -- so on the
+# vLLM image, whose entrypoint is `vllm serve`, the pod ran
+#     vllm serve bash -c "set -x; export HOME=..."
+# and vLLM parsed this whole script as the value of --compilation-config, crash-looping
+# forever while sshd never started. The Axolotl image has no entrypoint, which is why
+# training worked and hid this completely.
+START_ENTRYPOINT_JSON='["bash","-c"]'
+START_CMD_JSON="$(jq -nc --arg s "$START_SCRIPT" '[$s]')"
 
 # SSH sessions do not inherit the container env (point 12), so everything the pipeline
 # reads has to be passed here. RUNPOD_API_KEY included: scripts/lib/finish.sh needs it to
@@ -174,18 +243,29 @@ ENV_JSON="$(build_env_json MODE BRANCH REPO_URL PUBLIC_KEY RUNPOD_API_KEY HF_TOK
     KEEP_ALIVE TRAIN_CONFIG TP_SIZE SMOKE_BASE SMOKE_ADAPTER_S3 SMOKE_EAGER)"
 
 echo
+if [ "$ATTACH" = "1" ]; then
+    echo "==> attaching to the $MODE log; nothing on the pod is changed"
+    rp_cost_summary
+else
 echo "==> $MODE on RunPod"
+echo "  template: $TEMPLATE_NAME ($TEMPLATE_ID)"
+echo "            disk/volume/ports and the secrets ($(jq -r 'join(", ")' <<<"$TEMPLATE_ENV_KEYS")) come from it"
+if [ -n "$TEMPLATE_IMAGE" ] && [ "$TEMPLATE_IMAGE" != "$IMAGE" ]; then
+    echo "  ⚠️  the template names a different image; README's $IMAGE_KEY wins:"
+    echo "        template: $TEMPLATE_IMAGE"
+fi
 echo "  image  : $IMAGE"
 echo "  branch : $BRANCH (${REMOTE_SHA:0:7})"
 echo "  budget : FP8-capable, >=${MIN_TOTAL_VRAM_GB} GB total, secure cloud"
 echo "           1 GPU under \$${PREFER_USD_PER_HR}/hr, then multi-GPU under \$${PREFER_USD_PER_HR}/hr, then up to \$${MAX_USD_PER_HR}/hr"
-if [ "${KEEP_ALIVE:-false}" = "true" ]; then
-    echo "  after  : KEEP_ALIVE=true, the pod stays up (and billable) when the run ends"
+if [ "$KEEP_ALIVE" = "true" ]; then
+    echo "  after  : --keep-alive -- the pod stays up and billing when the run ends"
 else
-    echo "  after  : the pod stops itself when the run ends (KEEP_ALIVE=true keeps it warm)"
+    echo "  after  : the pod stops itself when the run ends (--keep-alive keeps it warm)"
 fi
 echo "  guard  : the pod stops itself after ${MAX_POD_HOURS}h no matter what (MAX_POD_HOURS)"
 rp_cost_summary
+fi
 
 is_fp8_gpu() {
     local gpu
@@ -263,17 +343,16 @@ create_pod() {
         gpu_id="$(cut -f7 <<<"$row")"
         echo "==> creating $POD_NAME: ${count}x $gpu_id at \$${price}/hr"
 
-        # cloudType is explicit, never defaulted (point 10).
+        # cloudType is explicit, never defaulted (point 10). Everything the template already
+        # decides -- disk, volume, mount path, ports, secrets -- is deliberately absent.
         body="$(jq -nc --arg name "$POD_NAME" --arg image "$IMAGE" --arg gpu "$gpu_id" \
-            --arg mount "$VOLUME_MOUNT" --argjson count "$count" \
-            --argjson cdisk "$CONTAINER_DISK_GB" --argjson vol "$VOLUME_GB" \
-            --argjson cmd "$START_CMD_JSON" --argjson env "$ENV_JSON" '{
-                name: $name, imageName: $image,
+            --arg template "$TEMPLATE_ID" --argjson count "$count" \
+            --argjson cmd "$START_CMD_JSON" --argjson entry "$START_ENTRYPOINT_JSON" \
+            --argjson env "$ENV_JSON" '{
+                name: $name, templateId: $template, imageName: $image,
                 cloudType: "SECURE", computeType: "GPU", interruptible: false,
                 gpuTypeIds: [$gpu], gpuCount: $count, gpuTypePriority: "custom",
-                containerDiskInGb: $cdisk, volumeInGb: $vol, volumeMountPath: $mount,
-                ports: ["22/tcp", "8888/http"],
-                dockerStartCmd: $cmd, env: $env
+                dockerEntrypoint: $entry, dockerStartCmd: $cmd, env: $env
             }')"
 
         # One create, then read the result -- never a retry loop (point 9): a probe loop
@@ -289,7 +368,26 @@ create_pod() {
             POD_ID="$created_id"
             echo "  created $POD_ID"
             rp_cost_summary
-            rp_verify_pod_config "$POD_ID" "$IMAGE" "$START_CMD_JSON" || exit 1
+            # A pod that is billing but misconfigured is the worst outcome, so do not just
+            # print an instruction and leave -- offer to stop it here.
+            # The secrets are the whole reason for using a template, and whether pod-level
+            # env merges with the template's or replaces it is not documented. Read the
+            # created pod back and say which template keys actually landed.
+            local missing
+            missing="$(rp_api GET "/pods/$POD_ID" \
+                | jq -r --argjson t "$TEMPLATE_ENV_KEYS" '($t - (.env // {} | keys)) | join(", ")')"
+            if [ -n "$missing" ]; then
+                echo "  ⚠️  the template's env did not reach the pod: $missing"
+                echo "      The run will start without them (HF_TOKEN, S3_BUCKET, AWS_*)."
+                echo "      Set them in your shell so the launcher forwards them, or edit the pod in the console."
+            fi
+            if ! rp_verify_pod_config "$POD_ID" "$IMAGE" "$START_CMD_JSON" "$START_ENTRYPOINT_JSON"; then
+                if confirm "  stop $POD_ID now?"; then
+                    rp_api POST "/pods/$POD_ID/stop" >/dev/null && echo "  stopped."
+                    rp_cost_summary
+                fi
+                exit 1
+            fi
             return 0
         fi
         # Availability is the usual reason, and it changes minute to minute -- so search
@@ -304,11 +402,12 @@ create_pod() {
 # with everything already correct is the good case -- restart keeps the GPU, and stopping
 # risks never getting it back (point 11).
 configure_and_start_pod() {
-    local pod_id="$1" pod status image current_cmd current_env desired_env response
+    local pod_id="$1" pod status image current_cmd current_entry current_env desired_env response
     pod="$(rp_api GET "/pods/$pod_id")"
     status="$(jq -r '.desiredStatus' <<<"$pod")"
-    image="$(jq -r '.image // ""' <<<"$pod")"
+    image="$(rp_pod_image "$pod")"
     current_cmd="$(jq -c '.dockerStartCmd // []' <<<"$pod")"
+    current_entry="$(jq -c '.dockerEntrypoint // []' <<<"$pod")"
     desired_env="$(jq -c 'to_entries | sort_by(.key)' <<<"$ENV_JSON")"
     current_env="$(jq -c --argjson want "$ENV_JSON" \
         '(.env // {}) | with_entries(select(.key | in($want))) | to_entries | sort_by(.key)' <<<"$pod")"
@@ -316,13 +415,19 @@ configure_and_start_pod() {
     if [ "$status" = "RUNNING" ] \
         && [ "$image" = "$IMAGE" ] \
         && [ "$current_cmd" = "$START_CMD_JSON" ] \
+        && [ "$current_entry" = "$START_ENTRYPOINT_JSON" ] \
         && [ "$current_env" = "$desired_env" ]; then
         echo "==> $pod_id already has the right image, start command and environment."
-        confirm "  restart the container to start the $MODE run? (kills anything running on it)" \
-            || { echo "aborted."; exit 1; }
-        rp_api POST "/pods/$pod_id/restart" >/dev/null || {
-            echo "❌ restart failed (HTTP $(rp_code))" >&2; exit 1
-        }
+        # Declining must not abort: the reason to say no is that a run is already going and
+        # you want to watch it, so no == attach. Aborting here sent you back to the shell
+        # with the job still running and no way to see it.
+        if confirm "  restart the container to start the $MODE run? (kills anything running on it)"; then
+            rp_api POST "/pods/$pod_id/restart" >/dev/null || {
+                echo "❌ restart failed (HTTP $(rp_code))" >&2; exit 1
+            }
+        else
+            echo "  leaving the run alone -- attaching to its log instead."
+        fi
         POD_ID="$pod_id"
         return 0
     fi
@@ -331,6 +436,7 @@ configure_and_start_pod() {
         echo "==> $pod_id needs a different configuration:"
         [ "$image" = "$IMAGE" ] || echo "     image: $image -> $IMAGE"
         [ "$current_cmd" = "$START_CMD_JSON" ] || echo "     start command differs"
+        [ "$current_entry" = "$START_ENTRYPOINT_JSON" ] || echo "     entrypoint differs (image default would swallow the start command)"
         [ "$current_env" = "$desired_env" ] || echo "     environment differs"
         echo "  A running pod discards those on write, so it has to be stopped first --"
         echo "  and a stopped pod is not guaranteed to get its GPU back."
@@ -342,13 +448,19 @@ configure_and_start_pod() {
     fi
 
     echo "==> configuring $pod_id"
+    # PATCH takes no templateId, and it replaces `env` wholesale rather than merging. Sending
+    # only our overrides would therefore delete the template's HF_TOKEN, S3_BUCKET and AWS
+    # keys from an existing pod, so start from what the pod already has and layer on top.
+    local merged_env
+    merged_env="$(jq -c --argjson want "$ENV_JSON" '(.env // {}) * $want' <<<"$pod")"
     rp_api PATCH "/pods/$pod_id" \
-        "$(jq -nc --arg image "$IMAGE" --argjson cmd "$START_CMD_JSON" --argjson env "$ENV_JSON" \
-            '{imageName: $image, dockerStartCmd: $cmd, env: $env}')" >/dev/null || {
+        "$(jq -nc --arg image "$IMAGE" --argjson cmd "$START_CMD_JSON" \
+            --argjson entry "$START_ENTRYPOINT_JSON" --argjson env "$merged_env" \
+            '{imageName: $image, dockerEntrypoint: $entry, dockerStartCmd: $cmd, env: $env}')" >/dev/null || {
         echo "❌ configuring failed (HTTP $(rp_code))" >&2; exit 1
     }
 
-    rp_verify_pod_config "$pod_id" "$IMAGE" "$START_CMD_JSON" || exit 1
+    rp_verify_pod_config "$pod_id" "$IMAGE" "$START_CMD_JSON" "$START_ENTRYPOINT_JSON" || exit 1
 
     echo "==> starting $pod_id"
     if response="$(rp_api POST "/pods/$pod_id/start")"; then
@@ -369,19 +481,26 @@ configure_and_start_pod() {
 # `pod list` shows running pods only; a stopped pod looks deleted unless you ask for all
 # of them (point 8). The REST collection returns both.
 PODS="$(rp_api GET /pods)" || { echo "❌ could not list pods (HTTP $(rp_code)): $PODS" >&2; exit 1; }
-# .machine.gpuTypeId as well as .gpu: a stopped pod stays pinned to its host machine, and
-# that is where its GPU identity survives.
+# Include a pod unless it is positively identified as a CPU pod. Requiring evidence of a
+# GPU looked safer and was much worse: for the first minutes after creation `gpu` is null
+# and `machine` is empty, so a freshly created pod is invisible -- and the next run would
+# happily create a second one at $2/hr. Absence of evidence is not evidence of absence.
 CANDIDATES="$(jq -c '[ .[]
-    | select(.desiredStatus != "TERMINATED"
-             and ((.gpu.count // 0) > 0 or (.machine.gpuTypeId // "") != ""))
-    | {id, name, status: .desiredStatus, image, cost: (.costPerHr // 0),
+    | select(.desiredStatus != "TERMINATED" and ((.cpuFlavorId // "") == ""))
+    | {id, name, status: .desiredStatus, cost: (.costPerHr // 0),
+       image: (.imageName // .image // "?"),
        gpuTypeId: (.machine.gpuTypeId // ""),
-       gpu: ((.gpu.count // 0 | tostring) + "x "
-             + (.gpu.displayName // .machine.gpuDisplayName // .machine.gpuTypeId // "?"))} ]' <<<"$PODS")"
+       gpu: (((.gpu.count // 0) as $c | if $c > 0 then "\($c)x " else "" end)
+             + (.gpu.displayName // .machine.gpuDisplayName // .machine.gpuTypeId
+                // "GPU not reported yet"))} ]' <<<"$PODS")"
 COUNT="$(jq -r 'length' <<<"$CANDIDATES")"
 
 POD_ID=""
 if [ "$COUNT" -eq 0 ]; then
+    if [ "$ATTACH" = "1" ]; then
+        echo "❌ no pod to attach to." >&2
+        exit 1
+    fi
     echo
     echo "==> no reusable GPU pod found."
     create_pod
@@ -391,7 +510,7 @@ else
     jq -r 'to_entries[] | "  [\(.key + 1)] \(.value.name)  \(.value.id)  \(.value.status)  \(.value.gpu)  $\(.value.cost)/hr  \(.value.image)"' <<<"$CANDIDATES"
     if [ "$COUNT" -eq 1 ]; then
         POD_TO_USE="$(jq -r '.[0].id' <<<"$CANDIDATES")"
-        echo "  reusing $POD_TO_USE"
+        [ "$ATTACH" = "1" ] && echo "  attaching to $POD_TO_USE" || echo "  reusing $POD_TO_USE"
     else
         CHOICE=""
         read -r -p "  reuse which one? [number, n = create a new pod] " CHOICE </dev/tty || true
@@ -409,11 +528,15 @@ else
         # perfect one -- but silently running an FP8 test on Ampere is how a wrong result
         # gets believed.
         GPU_TYPE="$(jq -r --arg id "$POD_TO_USE" '.[] | select(.id == $id) | .gpuTypeId' <<<"$CANDIDATES")"
-        if [ -n "$GPU_TYPE" ] && ! is_fp8_gpu "$GPU_TYPE"; then
+        if [ "$ATTACH" = "0" ] && [ -n "$GPU_TYPE" ] && ! is_fp8_gpu "$GPU_TYPE"; then
             echo "⚠️  $GPU_TYPE predates Ada and has no FP8 tensor cores."
             echo "    bf16 training and eval are fine; the FP8 base model (TODO 2) is not."
         fi
-        configure_and_start_pod "$POD_TO_USE"
+        if [ "$ATTACH" = "1" ]; then
+            POD_ID="$POD_TO_USE"
+        else
+            configure_and_start_pod "$POD_TO_USE"
+        fi
     else
         create_pod
     fi
@@ -425,7 +548,7 @@ echo "==> waiting for $POD_ID"
 rp_wait_running "$POD_ID"
 rp_cost_summary
 
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $RP_SSH_PORT root@$RP_SSH_HOST"
+SSH_CMD="ssh -i $RP_SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $RP_SSH_PORT root@$RP_SSH_HOST"
 echo
 echo "  ssh    : $SSH_CMD"
 echo "  log    : $POD_LOG"
@@ -435,10 +558,21 @@ echo "    while IFS= read -r -d '' l; do export \"\$l\"; done < /proc/1/environ"
 echo
 
 # The container installs sshd on boot, so the port answers before the daemon does.
-echo "==> waiting for sshd"
+# BatchMode, so a key that needs a passphrase fails instead of waiting forever on a prompt
+# that '2>/dev/null' would have hidden; and keep the last error to show if we give up.
+echo "==> waiting for sshd (key: $RP_SSH_KEY)"
 WAITED=0
-until rp_ssh "$RP_SSH_HOST" "$RP_SSH_PORT" true 2>/dev/null; do
-    [ "$WAITED" -ge 600 ] && { echo "❌ no SSH after ${WAITED}s. Check the container logs in the RunPod console." >&2; exit 1; }
+SSH_ERR="$(mktemp "${TMPDIR:-/tmp}/runpod-ssh.XXXXXX")"
+trap 'rm -f "$RP_CODE_FILE" "$SSH_ERR"' EXIT
+until rp_ssh "$RP_SSH_HOST" "$RP_SSH_PORT" true 2>"$SSH_ERR"; do
+    if [ "$WAITED" -ge 300 ]; then
+        echo
+        echo "❌ no SSH after ${WAITED}s. Last error:" >&2
+        sed 's/^/     /' "$SSH_ERR" >&2
+        echo "   The pod is up and the run is unaffected -- this is only the log tail." >&2
+        echo "   Try: ssh -i $RP_SSH_KEY -o IdentitiesOnly=yes -p $RP_SSH_PORT root@$RP_SSH_HOST" >&2
+        exit 1
+    fi
     printf '\r  (%ss)  ' "$WAITED"
     sleep 10
     WAITED=$((WAITED + 10))

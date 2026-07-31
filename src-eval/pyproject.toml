@@ -10,6 +10,12 @@ dependencies = [
     "textstat>=0.7.13",
     "awscli",
     "boto3",
+    # scripts/eval.sh pulls the dataset with DVC, and the eval image has no Python
+    # environment of its own -- whatever this file declares is all there is. Without it the
+    # pull failed with `No module named dvc` and `set -e` killed a freshly started pod.
+    # The [s3] extra to match src-train: the default remote is the local data/s3-mock
+    # directory, but the dataset is headed for S3 (see TODO.md).
+    "dvc[s3]>=3.50.0",
     "transformers",
     "mistral_common>=1.11.0",
     "safetensors",  # smoke_adapter.diagnose_no_effect inspects lora_B magnitudes

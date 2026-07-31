@@ -94,6 +94,24 @@ rp_gpu_candidates() {
     ' <<<"$resp"
 }
 
+# The public TCP port for a private port, from GraphQL `runtime.ports`.
+#
+# REST's `portMappings` is a flat {privatePort: publicPort} map, which cannot represent
+# 22/tcp and 22/udp at the same time -- and the templates expose both. The UDP entry wins,
+# so REST reported 15304 while sshd was listening on 15303, and the launcher spent five
+# minutes probing a port nothing was bound to before giving up. runtime.ports carries the
+# protocol, so it is the only source that can answer this correctly.
+rp_tcp_port() {
+    local pod_id="$1" private="${2:-22}" query resp
+    query="$(jq -nc --arg id "$pod_id" \
+        '{query: ("query { pod(input:{podId:\"" + $id + "\"}) { runtime { ports { privatePort publicPort type } } } }")}')"
+    resp="$(rp_graphql "$query")"
+    jq -r --argjson p "$private" '
+        (.data.pod.runtime.ports // [])
+        | map(select(.privatePort == $p and ((.type // "") | ascii_downcase) == "tcp"))
+        | (.[0].publicPort // empty)' <<<"$resp" 2>/dev/null
+}
+
 # Poll until the pod is up AND reachable. desiredStatus alone is not enough: it flips to
 # RUNNING before the machine has published an IP and a port mapping for 22.
 # Sets RP_SSH_HOST and RP_SSH_PORT.
@@ -103,7 +121,9 @@ rp_wait_running() {
         pod="$(rp_api GET "/pods/$pod_id")" || true
         status="$(jq -r '.desiredStatus // "?"' <<<"$pod" 2>/dev/null)"
         ip="$(jq -r '.publicIp // ""' <<<"$pod" 2>/dev/null)"
-        port="$(jq -r '(.portMappings // {})."22" // ""' <<<"$pod" 2>/dev/null)"
+        # GraphQL first, REST only as a fallback -- see rp_tcp_port.
+        port="$(rp_tcp_port "$pod_id")"
+        [ -n "$port" ] || port="$(jq -r '(.portMappings // {})."22" // ""' <<<"$pod" 2>/dev/null)"
         if [ "$status" = "RUNNING" ] && [ -n "$ip" ] && [ -n "$port" ]; then
             printf '\r  pod %s is up: %s:%s%-20s\n' "$pod_id" "$ip" "$port" ""
             RP_SSH_HOST="$ip"
@@ -137,11 +157,76 @@ rp_wait_stopped() {
 # Our own sshd, not RunPod's proxy: the proxy discards remote commands, so no automation
 # can tail a log or run a diagnostic through it (point 3). Pod IPs get recycled across
 # machines, so a known_hosts entry would only ever produce a false alarm.
+# RP_SSH_KEY pins the identity to the key we actually installed on the pod. Without it ssh
+# offers every key in ~/.ssh and everything the agent holds, in its own order, and sshd
+# closes the connection after MaxAuthTries (6) -- so a machine with a handful of keys fails
+# to log in to a pod whose authorized_keys is perfectly correct, while a machine with no
+# agent connects first try.
 rp_ssh() {
     local host="$1" port="$2"
     shift 2
+    local id
+    id=()
+    [ -n "${RP_SSH_KEY:-}" ] && [ -f "$RP_SSH_KEY" ] && id=(-i "$RP_SSH_KEY" -o IdentitiesOnly=yes)
+    # BatchMode: never stop on an interactive prompt. Everything here authenticates with a
+    # key, and a hidden passphrase prompt is indistinguishable from a hung connection.
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -o ConnectTimeout=10 -o ServerAliveInterval=30 -p "$port" "root@$host" "$@"
+        -o ConnectTimeout=10 -o ServerAliveInterval=30 -o BatchMode=yes \
+        "${id[@]}" -p "$port" "root@$host" "$@"
+}
+
+# Templates carry the image, the disk and volume sizes, the ports, and the secrets. Pick one
+# by id, or by matching the mode against the account's `begleit-*` templates. Prints the
+# whole template object; prompts only when the name alone cannot decide.
+rp_find_template() {
+    local wanted_id="$1" mode="$2" all matches count name id
+    all="$(rp_api GET /templates)" || {
+        echo "❌ could not list templates: $all" >&2; return 1; }
+
+    if [ -n "$wanted_id" ]; then
+        matches="$(jq -c --arg id "$wanted_id" '[ .[] | select(.id == $id) ]' <<<"$all")"
+        [ "$(jq -r 'length' <<<"$matches")" -eq 1 ] || {
+            echo "❌ no template with id '$wanted_id'" >&2; return 1; }
+        jq -c '.[0]' <<<"$matches"
+        return 0
+    fi
+
+    # The mode has to be a delimited word. A plain substring match puts every template in
+    # every bucket: "train" occurs inside "begleit-app-training", and "eval" inside
+    # "evaluate-separately", so both modes matched all four templates.
+    # Serverless templates share the endpoint but cannot run a pod.
+    matches="$(jq -c --arg m "$mode" '[ .[]
+        | select((.isServerless // false) | not)
+        | select(.name | ascii_downcase | test("begleit"))
+        | select(.name | ascii_downcase | test("(^|[_-])" + $m + "([_-]|$)")) ]' <<<"$all")"
+    count="$(jq -r 'length' <<<"$matches")"
+
+    if [ "$count" -eq 0 ]; then
+        echo "❌ no '$mode' template whose name contains 'begleit'. Set TEMPLATE_ID=..." >&2
+        jq -r '.[] | "     \(.id)  \(.name)"' <<<"$all" >&2
+        return 1
+    fi
+    if [ "$count" -eq 1 ]; then
+        jq -c '.[0]' <<<"$matches"
+        return 0
+    fi
+
+    echo "==> $count '$mode' templates:" >&2
+    jq -r 'to_entries[] | "  [\(.key + 1)] \(.value.name)  \(.value.imageName)"' <<<"$matches" >&2
+    local choice=""
+    read -r -p "  use which one? [number] " choice </dev/tty || true
+    case "$choice" in
+        ""|*[!0-9]*|0) echo "aborted." >&2; return 1 ;;
+    esac
+    jq -ce --argjson i "$((choice - 1))" '.[$i] // empty' <<<"$matches" \
+        || { echo "❌ no option $choice" >&2; return 1; }
+}
+
+# The live API answers with `imageName` and leaves `image` null, while the published
+# OpenAPI schema documents only `image`. Reading the documented field alone made every
+# verification fail against a pod that was in fact configured correctly, so read both.
+rp_pod_image() {
+    jq -r '.imageName // .image // ""' <<<"$1" 2>/dev/null
 }
 
 # Never trust a write, verify with an independent read (point 7). Both known ways of losing
@@ -149,17 +234,19 @@ rp_ssh() {
 # report success first, and a pod that falls back to the image default is the exact failure
 # that cost two hours to diagnose (point 1).
 rp_verify_pod_config() {
-    local pod_id="$1" want_image="$2" want_cmd="$3" attempt pod=""
+    local pod_id="$1" want_image="$2" want_cmd="$3" want_entry="$4" attempt pod=""
     for attempt in 1 2 3; do
         pod="$(rp_api GET "/pods/$pod_id")" || true
-        if [ "$(jq -r '.image // ""' <<<"$pod" 2>/dev/null)" = "$want_image" ] \
-            && [ "$(jq -c '.dockerStartCmd // []' <<<"$pod" 2>/dev/null)" = "$want_cmd" ]; then
+        if [ "$(rp_pod_image "$pod")" = "$want_image" ] \
+            && [ "$(jq -c '.dockerStartCmd // []' <<<"$pod" 2>/dev/null)" = "$want_cmd" ] \
+            && [ "$(jq -c '.dockerEntrypoint // []' <<<"$pod" 2>/dev/null)" = "$want_entry" ]; then
             return 0
         fi
         sleep 5
     done
     echo "❌ pod $pod_id reports success but is not configured as asked:" >&2
-    echo "     image        : $(jq -r '.image // "?"' <<<"$pod")" >&2
+    echo "     image        : $(rp_pod_image "$pod")" >&2
+    echo "     entrypoint   : $(jq -c '.dockerEntrypoint // []' <<<"$pod")" >&2
     echo "     start command: $(jq -c '.dockerStartCmd // []' <<<"$pod" | cut -c1-70)" >&2
     echo "   It would run the image's default command. Stop it: runpodctl stop pod $pod_id" >&2
     return 1

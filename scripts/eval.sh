@@ -16,7 +16,12 @@ mkdir -p "$(dirname "$LOG_FILE")"
 if [ ! -f data/train/dataset.jsonl ]; then
     echo "==> dataset missing, pulling via DVC"
     # Default remote is the local data/s3-mock directory, so no AWS credentials needed.
-    "$(dirname "$PY_TRAIN")/dvc" pull 2>/dev/null || "$PY_TRAIN" -m dvc pull
+    # src-eval declares dvc[s3], so this should succeed -- but it stays non-fatal on
+    # purpose: smoke_adapter.py already drops the training-sample case when the dataset is
+    # absent and still exercises the adapter, so a failed pull is not worth losing a
+    # started pod over. It cost exactly that once.
+    "$(dirname "$PY_TRAIN")/dvc" pull 2>/dev/null || "$PY_TRAIN" -m dvc pull || \
+        echo "⚠️  no DVC on this image -- continuing without the training sample."
 fi
 
 export SMOKE_ENGINE="${SMOKE_ENGINE:-vllm}"

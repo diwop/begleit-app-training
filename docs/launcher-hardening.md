@@ -88,3 +88,39 @@ Three images behaved three different ways, and each difference cost a run:
     the pod itself.
 25. **Report running cost after any create or delete**, so an accident is visible within
     seconds rather than minutes.
+
+## Learned on the first full launcher run (2026-07-31)
+
+26. **Override `dockerEntrypoint`, not just `dockerStartCmd`.** `dockerStartCmd` is the
+    container's CMD, and Docker *appends* CMD to the image's ENTRYPOINT. The vLLM image's
+    entrypoint is `vllm serve`, so a pod configured only with a start command ran
+    `vllm serve bash -c "set -x; export HOME=..."`; vLLM parsed the whole shell script as
+    the value of `--compilation-config` and crash-looped, so sshd never started and the
+    launcher waited forever on a pod that could never come up. Set
+    `dockerEntrypoint: ["bash","-c"]` with the script as the single CMD element. The
+    Axolotl image has no ENTRYPOINT, which is why training worked and hid this entirely --
+    the same trap as point 1, one layer down.
+27. **The pod's image is `imageName`, not `image`.** The published OpenAPI schema documents
+    `image`; the live API returns `imageName` and leaves `image` null. Verifying against the
+    documented field failed on a pod that was configured perfectly, and the script offered
+    to stop a healthy $1.99/hr pod. Read `.imageName // .image`.
+28. **A fresh pod reports no GPU for the first minutes.** `gpu` is null and `machine` is
+    empty right after creation, so a filter that requires evidence of a GPU cannot see the
+    pod it just made -- and the next invocation creates a second one. Exclude only what is
+    positively identified as a CPU pod; absence of evidence is not evidence of absence.
+29. **Pod logs are not in any API.** There is no `logs` field on `Pod`, no `podLogs` query,
+    no REST endpoint and no `runpodctl` subcommand -- the console's Logs tab is the only
+    place image pull/extract output and container crash loops are visible. GraphQL
+    `pod { runtime }` is the closest proxy: null while the image is still being pulled,
+    populated once the container runs.
+30. **`portMappings` cannot express `22/tcp` and `22/udp` at once.** It is a flat
+    `{privatePort: publicPort}` map, so when a template exposes both protocols on port 22
+    the UDP entry overwrites the TCP one. REST reported 15304 while sshd listened on 15303,
+    and the launcher probed a dead port for five minutes and declared the pod unreachable.
+    Use GraphQL `runtime.ports`, which carries `type`, and select `tcp`.
+31. **`scripts/eval.sh` must not die when DVC is absent.** `set -e` turned the dataset
+    pull into a fatal error and wasted a whole pod start, even though `smoke_adapter.py`
+    already handles a missing dataset by dropping the training-sample case. `src-eval` now
+    declares `dvc[s3]` so the pull works, and the step stays non-fatal regardless: the eval
+    image has no environment of its own, so anything not declared in `src-eval/pyproject.toml`
+    simply is not there.
