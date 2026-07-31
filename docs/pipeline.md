@@ -52,6 +52,17 @@ them.
 | `VALIDATION_METRICS_MAX_TOKENS` | 256 | cap per generation |
 | `VALIDATION_METRICS_OFF` | unset | `1` skips generation; eval loss only |
 
+`scripts/start_runpod.sh` forwards all three to the pod, so they can be set per run without
+editing a config. It also forwards `CUDA_LAUNCH_BLOCKING` and `TORCH_USE_CUDA_DSA`:
+
+    CUDA_LAUNCH_BLOCKING=1 bash scripts/start_runpod.sh train
+
+CUDA reports errors asynchronously, so a fault in one kernel surfaces at the next
+synchronising call and the traceback blames something innocent — a crash on 2026-07-31
+pointed at a three-element fp32 matmul in Gemma 4's rotary embedding, which cannot itself
+be at fault. Setting it to 1 makes every kernel launch synchronous: far slower, and the
+only way to see where the error really is.
+
 The callback never raises: a failure prints a warning and the run continues.
 
 ### Where the numbers end up
