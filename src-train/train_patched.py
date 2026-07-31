@@ -250,13 +250,31 @@ if os.environ.get("ROPE_DEBUG") == "1":
                 parts.append(f"x.stride={x.stride()} pos.stride={position_ids.stride()}")
                 parts.append(f"alloc={_torch.cuda.memory_allocated(x.device) >> 20}MiB "
                              f"reserved={_torch.cuda.memory_reserved(x.device) >> 20}MiB")
-                try:
-                    _probe = _torch.ones(2, 2, device=x.device, dtype=_torch.float32)
-                    _ = (_probe @ _probe).sum().item()
-                    parts.append("TRIVIAL_FP32_MATMUL=ok")
-                except Exception as exc:  # noqa: BLE001
-                    parts.append(f"TRIVIAL_FP32_MATMUL=FAILED {type(exc).__name__}: "
-                                 f"{str(exc)[:120]}")
+                # The failing call is cublasSgemm -- SINGLE precision. Everything else in
+                # this model is bf16, and the rotary embedding is the first thing to force
+                # fp32 (maybe_autocast(enabled=False) plus .float()). TF32 is a mode that
+                # applies to exactly that: fp32 matmuls on tensor cores. config/base.yml
+                # sets tf32: true, and the image is a *mutable* `main` tag on CUDA 13.0, so
+                # a regression there would show up here and nowhere else.
+                #
+                # tf32 OFF is tried FIRST, while the CUDA context is still clean: a failure
+                # can leave it in a state where anything afterwards fails regardless.
+                def _try_fp32_matmul():
+                    probe = _torch.ones(2, 2, device=x.device, dtype=_torch.float32)
+                    return (probe @ probe).sum().item()
+
+                _tf32_was = _torch.backends.cuda.matmul.allow_tf32
+                parts.append(f"tf32_allowed={_tf32_was} "
+                             f"precision={_torch.get_float32_matmul_precision()}")
+                for _label, _setting in (("tf32_OFF", False), ("tf32_AS_CONFIGURED", _tf32_was)):
+                    _torch.backends.cuda.matmul.allow_tf32 = _setting
+                    try:
+                        _try_fp32_matmul()
+                        parts.append(f"FP32_MATMUL[{_label}]=ok")
+                    except Exception as exc:  # noqa: BLE001
+                        parts.append(f"FP32_MATMUL[{_label}]=FAILED "
+                                     f"{type(exc).__name__}: {str(exc)[:90]}")
+                _torch.backends.cuda.matmul.allow_tf32 = _tf32_was
                 print("🔬 ROPE FIRST CALL || " + " || ".join(parts), flush=True)
             return original(self, x, position_ids, *args, **kwargs)
         return reporting_forward

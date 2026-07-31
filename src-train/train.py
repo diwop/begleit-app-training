@@ -312,6 +312,7 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
         ("ATTN_IMPLEMENTATION", "attn_implementation", str),
         ("GEMMA4_HYBRID_ATTN", "gemma4_hybrid_attn_impl", lambda v: v == "1"),
         ("EVAL_STRATEGY", "eval_strategy", str),
+        ("TF32", "tf32", lambda v: v == "1"),
     ):
         raw = os.environ.get(env_key, "")
         if raw:
