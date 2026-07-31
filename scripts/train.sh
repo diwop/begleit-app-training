@@ -19,10 +19,9 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # Pre-flight: can this GPU multiply two 2x2 matrices?
 #
-# On 2026-07-31 a series of pods could not. `cublasSgemm` returned
-# CUBLAS_STATUS_INVALID_VALUE for any fp32 matmul, while allocation worked fine. Two pods
-# with the same image, the same driver and the same card model differed: one passed, one
-# failed. Nothing in this repo is in the call path -- it is four lines of torch.
+# This verifies the LD_LIBRARY_PATH fix in scripts/lib/platform.sh actually took effect on
+# this pod: without it the wheel's libcublas runs against the system libcublasLt, and every
+# matmul fails with CUBLAS_STATUS_INVALID_VALUE while allocation still succeeds.
 #
 # Without this gate the symptom appears ~20 minutes later, after a 51 GB model download,
 # as a crash inside Gemma 4's rotary embedding -- which reads like a model bug and cost a
@@ -35,7 +34,11 @@ x = torch.ones(2, 2, device=torch.device(0))
 assert x.matmul(x).sum().item() == 8.0" 2>"$PREFLIGHT_ERR"; then
         echo "❌ PRE-FLIGHT FAILED: this GPU cannot perform a 2x2 fp32 matmul."
         sed 's/^/    /' "$PREFLIGHT_ERR" | tail -3
-        echo "   The pod is faulty; the code is not involved. Destroy it and start another."
+        echo "   On CUBLAS_STATUS_INVALID_VALUE, check which cuBLAS pair is loaded:"
+        echo "     $PY_TRAIN -c \"import torch; torch.ones(1, device=0); \\"
+        echo "       print([l.split()[-1] for l in open('/proc/self/maps') if 'cublas' in l])\""
+        echo "   Both libcublas and libcublasLt must come from site-packages/nvidia/, not"
+        echo "   from /usr/local/cuda. scripts/lib/platform.sh sets LD_LIBRARY_PATH for that."
         echo "   For detail: $PY_TRAIN src-train/cuda_smoke.py"
         rm -f "$PREFLIGHT_ERR"
         exit 1

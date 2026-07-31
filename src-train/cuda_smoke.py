@@ -188,6 +188,15 @@ def main() -> None:
         import torch
         print(f"torch {torch.__version__} | cuda {torch.version.cuda} | "
               f"devices {torch.cuda.device_count()}")
+        # Which cuBLAS is actually mapped in, which is what the whole 2026-07-31 hunt
+        # turned out to hinge on. Needs a real allocation first to force CUDA init.
+        try:
+            torch.ones(1, device="cuda")
+            for path in sorted({ln.split()[-1] for ln in open("/proc/self/maps")
+                                if "cublas" in ln}):
+                print(f"  cublas {path}")
+        except Exception:
+            pass
     except Exception:
         traceback.print_exc()
         sys.exit("torch is not importable; nothing here can run")
@@ -201,8 +210,10 @@ def main() -> None:
             print(f">>> Re-run it alone for the full traceback:")
             print(f"      {sys.executable} {sys.argv[0]} --only {index}")
             if index <= 1:
-                print(">>> A failure this early means the GPU itself cannot do a 2x2 matmul.")
-                print(">>> That is a host or driver fault, not anything this repo controls.")
+                print(">>> A failure this early is the mismatched cuBLAS pair: torch's wheel")
+                print(">>> libcublas against the image's system libcublasLt. Check the paths")
+                print(">>> printed above -- both must live under site-packages/nvidia/.")
+                print(">>> scripts/lib/platform.sh puts them first on LD_LIBRARY_PATH.")
             sys.exit(1)
 
     print("\n>>> All stages passed: cuBLAS is healthy here, including under ZeRO-3 init.")

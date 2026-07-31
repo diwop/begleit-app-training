@@ -81,6 +81,40 @@ else
     [ -x "$PY_TRAIN" ] || PY_TRAIN="$(command -v python3)"
     PY_EVAL="${PY_EVAL:-$(command -v python3)}"
 
+    # Make torch's own CUDA libraries win the loader's search, ahead of the system CUDA.
+    #
+    # The images ship BOTH: a full CUDA under /usr/local/cuda-13.0, and a second copy inside
+    # torch's pip wheels under site-packages/nvidia/. They are not the same build, and the
+    # container starts with
+    #     LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+    # so the system copy is found first. torch's RPATH still pulls libcublas.so.13 from the
+    # wheel (13.1.0.3), but that library's own dependency on libcublasLt resolves against
+    # the system one (13.0.0.19). cuBLAS delegates nearly every gemm to cuBLASLt, so a
+    # mismatched pair leaves CUDA, the context and allocation all working while EVERY matmul
+    # fails -- fp32 and bf16 alike, TF32 on or off:
+    #     CUDA error: CUBLAS_STATUS_INVALID_VALUE when calling `cublasSgemm(...)`
+    #
+    # Which copy wins depends only on the loader environment the container happens to start
+    # with, so two pods from one image differ, one pod flips across a restart, and the same
+    # commit trains in the morning and dies in the afternoon. It cost a day, chased through
+    # the data, the config, DeepSpeed and Gemma 4's rotary embedding, because the symptom
+    # surfaces ~20 minutes in as a crash deep inside the model. See failures-and-fixes.md,
+    # iteration 15.
+    #
+    # Ask the interpreter where its wheels live rather than hardcoding a python version.
+    for _py in "$PY_TRAIN" "$PY_EVAL"; do
+        [ -x "$_py" ] || continue
+        _wheel_cuda="$("$_py" -c '
+import importlib.util, pathlib
+spec = importlib.util.find_spec("nvidia")
+dirs = {str(so.parent)
+        for loc in (spec.submodule_search_locations if spec else [])
+        for so in pathlib.Path(loc).glob("*/lib/libcublasLt.so*")}
+print(":".join(sorted(dirs)))' 2>/dev/null)"
+        [ -n "$_wheel_cuda" ] && export LD_LIBRARY_PATH="$_wheel_cuda${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    done
+    unset _py _wheel_cuda
+
     TRAIN_CONFIG="${TRAIN_CONFIG:-config/train-gemma4.yml}"
 
     OUTPUT_ROOT="${OUTPUT_ROOT:-/app/output}"

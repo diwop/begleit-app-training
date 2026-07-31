@@ -20,122 +20,15 @@ Inferenzlauf mit
 - Mistral Small 4 mit Reasoning
 - Schomacker
 
+
+## AKtueller Stand
+
+- läuft lokal
+- Fehler in RunPod beim erste predict-Schritt des Trainings. Runs:
+   - Gegentest, ob reines Training noch funzt: `EVAL_STRATEGY=no DEEPSPEED_OFFLOAD=0 bash scripts/start_runpod.sh train --keep-alive`
+   - Eval-Test mit aktivierter Engine+ DeepSpeed: `DEEPSPEED_OFFLOAD=0 ROPE_DEBUG=1 bash scripts/start_runpod.sh train --keep-alive`
+
 # Offene Aufgaben
-
-## 0. Erster Lauf auf dem echten Datensatz  ← nächster Schritt
-
-Der Datenteil ist fertig, der Lauf darauf nicht. Was jetzt steht:
-
-- **780 Paare** in `data/raw`, als *ein* DVC-Verzeichnis (vorher 16 Einzel-Pointer).
-  Import und Namens-Normalisierung: `src-train/import_raw.py`.
-- **DVC-Remote** ist `s3://diwop-leichte-sprache/dvc` — derselbe Bucket wie `S3_BUCKET`.
-  Zuerst lag er neben dem Quellkorpus unter `s3://diwop-analysis/dvc`; der RunPod-Lauf am
-  2026-07-31 ist genau daran gescheitert:
-
-      ERROR: failed to connect to s3 (diwop-analysis/dvc/files/md5)
-             Forbidden: An error occurred (403) when calling the HeadObject operation
-
-  Die RunPod-Rolle darf `diwop-analysis` nicht lesen. Zurückverlegen nur mit einer
-  entsprechenden IAM-Berechtigung (`s3:GetObject` + `s3:ListBucket` auf dem Prefix).
-  Persönliche SSO-Credentials in die Pod-Umgebung zu exportieren ist **kein** Ausweg:
-  `scripts/start_runpod.sh` kopiert Secrets bewusst nicht in die Pod-Env (Zeilen 108-112).
-- **Splits** 70/10/20 → `data/train/dataset.jsonl` (533), `data/train/validation.jsonl`
-  (75), `data/eval/holdout.jsonl` (167). Die Zuordnung ist `sha256(salt:id)`, kein
-  Shuffle — neue Dokumente verschieben kein einziges altes über die Holdout-Grenze.
-- **`data/excluded.json`**: Paare, die aus *allen* Splits fliegen, mit Begründung. Liegt in
-  git statt in DVC, damit die Entscheidung im PR review-bar ist. Aktuell `0013` und `0224`
-  — beides keine Übersetzungen, sondern andere Texte zum selben Thema. Weil die
-  Split-Zuordnung pro ID läuft, verschiebt ein Ausschluss nichts anderes.
-- **Holdout-Sperre**: `scripts/train.sh` zieht nur benannte Dateien und bricht im Container
-  ab, wenn `data/eval/holdout.jsonl` doch da liegt.
-- **Validation im Training**: `test_datasets` → Eval-Loss pro Epoche,
-  `load_best_model_at_end` auf `eval_loss`, plus `src-train/validation_metrics.py`
-  (generiert auf ein paar Validation-Samples und misst `src-eval/rules.py` +
-  Flesch/Wiener als Abstand zur menschlichen Referenz).
-- **`run_manifest.json`** liegt jetzt neben dem Adapter: Basismodell, Config-Hash und die
-  exakten IDs pro Split.
-
-Offen und noch **nicht** verifiziert:
-
-- **GitHub-Secrets**: Der CI-Job `validate-data` macht `dvc pull`. Das brauchte bisher keine
-  Credentials (Remote war das lokale `data/s3-mock`), jetzt schon. `AWS_ACCESS_KEY_ID`,
-  `AWS_SECRET_ACCESS_KEY` und optional `AWS_DEFAULT_REGION` müssen als Repository-Secrets
-  angelegt werden, sonst schlägt jeder PR-Build fehl.
-- Generierung im Callback unter **DeepSpeed ZeRO-3** — lokal auf MPS läuft sie, auf
-  mehreren Karten ist sie ungetestet. Sie ist gekapselt: ein Fehler loggt eine Warnung und
-  killt den Lauf nicht. Notausgang: `VALIDATION_METRICS_OFF=1`.
-- Laufzeit dieser Generierung auf dem 26B. Defaults sind bewusst klein
-  (`VALIDATION_METRICS_SAMPLES=4`, `VALIDATION_METRICS_MAX_TOKENS=256`); vor dem Hochdrehen
-  einmal `eval_ls_seconds` im Log ansehen.
-- `num_epochs: 3` steht weiter auf 3. Jetzt gibt es zum ersten Mal eine Eval-Kurve, an der
-  man das entscheiden kann.
-
-**Erster echter Lauf auf E2B (120 Schritte, 279 Trainingsdokumente, 2026-07-31):**
-
-| Schritt | `eval_loss` | `eval_ls_distance` | kurze Sätze | Bindestrich-Komposita/100w |
-|---|---|---|---|---|
-| 0 (Basis) | 4.016 | 0.2625 | 88 % | 3.95 |
-| 60 | 1.264 | **0.0706** | 78 % | **2.05** |
-| 120 | **1.204** | 0.2082 | 63 % | 3.85 |
-| Mensch | — | 0 | 72 % | 1.40 |
-
-Zwei Dinge daraus:
-
-1. **Die Daten lehren den Stil.** Nach 60 Schritten schreibt das Modell
-   `Boccia-Kugel` statt `Boccia Kugel`, einen Satz pro Zeile (100 %, exakt auf
-   Referenzniveau) und Aufzählungen als Listen. Das ist die Typografie der Leichten
-   Sprache, gelernt aus 60 Beispielen.
-2. **`eval_loss` und `eval_ls_distance` laufen auseinander.** Zwischen Schritt 60 und 120
-   sinkt der Loss weiter (1.264 → 1.204), der Stilabstand verdreifacht sich aber
-   (0.0706 → 0.2082) — die Bindestriche gehen fast vollständig wieder verloren.
-   `load_best_model_at_end` auf `eval_loss` hat deshalb **checkpoint-120 gewählt, also den
-   schlechter formatierten**. Vor dem 26B-Lauf zu entscheiden, ob
-   `metric_for_best_model` bleibt oder auf eine Kombination umgestellt wird.
-
-   ⚠️ `eval_ls_distance` steht auf 8 Validation-Samples, `eval_loss` auf 37 — ein Teil des
-   Ausschlags kann Rauschen sein. Vor einer Entscheidung `VALIDATION_METRICS_SAMPLES`
-   hochdrehen und den Lauf wiederholen.
-
-   `eval_ls_distance` sollte **nicht** allein zum Auswahlkriterium werden: Bei Schritt 60
-   behauptet das Modell `Dafür braucht man einen Rollstuhl` — frei erfunden, die Quelle sagt
-   „eingeschränkte Mobilität". Der Stil war da am besten, der Inhalt am schlechtesten. Genau
-   dafür braucht es P2-1 (Bedeutungserhalt) als Gegengewicht.
-
-**Datenqualität, neu und unangenehm:** Der Median des Wortzahl-Verhältnisses
-(Leichte Sprache ÷ Standard) liegt über alle 780 Paare bei **0.61** — die Leichte-Sprache-
-Seite ist meistens *kürzer*. Die Annahme in `docs/train-eval-review.md`, Leichte Sprache
-expandiere um 1.5–3x, stammt aus den ursprünglichen 8 Dokumenten und gilt für den echten
-Korpus nicht. Das Tier-A-Band in `src-eval/rules.py` ist entsprechend neu kalibriert
-(`[0.2, 2.2]`, 5./95. Perzentil), flaggt jetzt ~11% statt 89%. Stichproben zeigen aber ein
-tieferliegendes Problem: Es gibt Paare, die dasselbe *Thema* behandeln, aber keine
-Übersetzungen voneinander sind. Siehe `docs/data.md`.
-
-## 1. Linux-Pfad auf RunPod verifizieren
-
-Die vereinheitlichten Skripte sind **ausschließlich auf macOS getestet**. `src-train/train.py`
-hat jetzt eine Geräte-Erkennung (`detect_accelerator()`), und DeepSpeed sowie
-FlashAttention-2 werden nur noch bei CUDA injiziert. Das ist so geschrieben, dass sich das
-CUDA-Verhalten nicht ändert — belegt ist es nicht.
-
-**Konkret zu prüfen:**
-- `scripts/setup.sh` installiert im Container nur das Delta, legt kein venv an
-- `detect_accelerator()` liefert `("cuda", N)` mit der tatsächlichen Kartenzahl, DeepSpeed
-  ZeRO-3 wird injiziert
-- `scripts/eval.sh` behält nvidia-smi-Gate, `pkill VLLM::EngineCore` und die
-  Inductor-Cache-Umleitung (MooseFS)
-- Artefakte landen weiter unter `/app/output` (`OUTPUT_ROOT`)
-- `TP_SIZE` kommt jetzt aus `nvidia-smi --list-gpus` statt aus einer fest verdrahteten `2`,
-  und `CUDA_VISIBLE_DEVICES` wird daraus abgeleitet statt auf `0,1` festgenagelt. Auf einer
-  Ein-Karten-Instanz (1x RTX PRO 6000) muss also `TP_SIZE=1` herauskommen.
-
-**Durchführung:** ein kurzer Trainingslauf mit gedeckeltem `max_steps`, danach Eval:
-
-    bash scripts/start_runpod.sh train
-    bash scripts/start_runpod.sh eval
-
-Das Skript sucht zuerst einen vorhandenen GPU-Pod, legt sonst nach Rückfrage einen neuen an,
-setzt Image und Start-Kommando, wartet auf den Pod und hängt sich an das Log. Es ist bisher
-nur gegen eine nachgebaute API getestet — der erste echte Pod ist gleichzeitig sein Test.
 
 ## 2. FP8-Basismodell mit Adapter testen
 
