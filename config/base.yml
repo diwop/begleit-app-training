@@ -12,9 +12,47 @@ fp16: false
 tf32: true
 
 dataset_prepared_path: last_run_prepared
-val_set_size: 0
 
-sequence_len: 16384 
+# Convergence signal. An explicit file, NOT `val_set_size`: the validation set has to be
+# the one src-train/prepare_dataset.py recorded in data/split_manifest.json, so that the
+# adapter's run_manifest.json can state exactly which ids the run saw. A fraction carved
+# out at load time would differ between runs and could overlap the eval holdout.
+val_set_size: 0
+test_datasets:
+  - path: data/train/validation.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    split: train
+    message_property_mappings:
+      role: role
+      content: content
+
+# By step, not by epoch, and that is forced by `max_steps: 10` below: one epoch over 533
+# samples is 133 steps, so an epoch-based eval would never fire at all and
+# load_best_model_at_end would have nothing to choose between. Raise these together with
+# max_steps. Both strategies must match, because load_best_model_at_end requires it.
+#
+# Eval loss is teacher-forced and cheap; the generated Leichte-Sprache metrics that ride
+# along with it (src-train/validation_metrics.py) are not -- at eval_steps: 5 a 10-step run
+# evaluates three times, counting the one axolotl runs before training starts.
+eval_strategy: steps
+eval_steps: 5
+save_strategy: steps
+save_steps: 5
+save_total_limit: 2
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+# Curves for every logged series, including the eval_ls_* ones from
+# src-train/validation_metrics.py. Writes event files to output_dir/runs/, so they travel
+# to S3 with the adapter and need no account, server or API key:
+#     tensorboard --logdir <output_dir>
+# axolotl depends on tensorboard itself, so this cannot pull in anything new.
+use_tensorboard: true
+
+sequence_len: 16384
 sample_packing: false 
 pad_to_sequence_len: false
 
@@ -22,6 +60,22 @@ pad_to_sequence_len: false
 micro_batch_size: 1
 gradient_accumulation_steps: 4
 
+# TEMPORARY, AND FAR TOO SHORT TO TRAIN ANYTHING.
+#
+# 10 steps is roughly 7% of a single epoch over the 533 training documents. It exists so
+# that pipeline changes can be exercised end to end -- data, splits, eval loss, the
+# Leichte-Sprache metrics, the manifests, the S3 sync -- without spending GPU hours on a
+# run whose quality nobody can yet judge.
+#
+# **Raise this once the metrics are trustworthy.** Today they are not: on the E2B run the
+# style distance improved to step 60 and then degraded by step 120 while eval_loss kept
+# falling, so `metric_for_best_model: eval_loss` selected the worse-formatted checkpoint.
+# Training longer before that is resolved just buys a more confident wrong answer. See
+# TODO.md, "Erster echter Lauf auf E2B".
+#
+# When raising it, raise eval_steps/save_steps above with it, and revisit num_epochs --
+# max_steps overrides it, so 3 epochs is currently unreachable.
+max_steps: 10
 num_epochs: 3
 optimizer: adamw_torch_fused # Maximizes execution speed when fitting natively in VRAM
 lr_scheduler: cosine

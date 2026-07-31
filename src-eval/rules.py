@@ -4,7 +4,8 @@ The rubric is split into two tiers, because they answer different questions and 
 of them may be used to filter training data:
 
   Tier A -- describes the *relationship* between source and target (length ratio). These
-           are objective pair errors. Safe to filter or repair on.
+           are objective pair errors. Safe to filter or repair on. The band is calibrated
+           against the whole corpus, not against theory -- see `Thresholds`.
   Tier B -- describes a *single text* against the system prompt (sentence length,
            hyphenation, Verbalstil, ...). NEVER filter references on these: the human
            references are what validate the rules, so filtering by them is circular.
@@ -69,8 +70,14 @@ class Thresholds:
     max_sentence_words: int = 10          # data/system-prompt.md: "Richtwert"
     min_compound_chars: int = 13          # long word without a hyphen -> likely a compound
     max_heading_words: int = 8
-    min_length_ratio: float = 1.3         # Leichte Sprache expands; near 1.0 means content was dropped
-    max_length_ratio: float = 3.5         # far above means content was invented
+    # Calibrated on the full 780-document corpus, NOT on theory. The old band [1.3, 3.5]
+    # came from the belief that Leichte Sprache expands a text 1.5-3x, measured on the
+    # eight documents that were all we had. Across 780 professional pairs the median ratio
+    # is 0.61 -- the Leichte Sprache side is usually SHORTER -- and [1.3, 3.5] flagged 89%
+    # of the corpus, which is not a signal. These are the 5th and 95th percentiles, so the
+    # band is a review queue of ~11% of pairs, not a claim about what the register does.
+    min_length_ratio: float = 0.2
+    max_length_ratio: float = 2.2
 
 
 @dataclass(frozen=True)

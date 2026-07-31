@@ -33,18 +33,48 @@ if [ "$IS_LOCAL" = "1" ]; then
     export VLLM_TARGET_DEVICE=cpu
     export MAX_JOBS="${MAX_JOBS:-6}"
 
-    if "$PY_TRAIN" -c "import axolotl" 2>/dev/null; then
+    # Both, not just axolotl: the two are installed by separate commands below, and a venv
+    # with axolotl but without this repo's own dependencies passed the old check happily.
+    # src-train/validation_metrics.py then failed at the first evaluation on a missing
+    # textstat -- an hour into a run, which is a bad place to find out.
+    if "$PY_TRAIN" -c "import axolotl, textstat" 2>/dev/null; then
         echo "==> [1/2] training venv already good, skipping"
     else
         echo "==> [1/2] training venv (Axolotl on Metal)"
-        uv venv --python 3.12 "$LOCAL_DIR/venv-train"
+        # Guarded like venv-eval below: `uv venv` refuses to touch a directory that already
+        # exists, so an install that died half way left a venv that could never be repaired
+        # -- the next run failed on the venv creation instead of retrying the install.
+        [ -d "$LOCAL_DIR/venv-train" ] || uv venv --python 3.12 "$LOCAL_DIR/venv-train"
         # The one dependency that cannot live in src-train/pyproject.toml: axolotl pins
         # antlr4-python3-runtime==4.13.2, which contradicts the hydra-core that dvc[s3]
         # needs. `uv pip install` resolves per-platform and installs both fine; the
         # UNIVERSAL lock that `uv run --project` builds (dvc.yaml, CI) cannot. Declaring it
         # there breaks dataset prep, so it is installed here instead. Everything else --
         # including the pinned vLLM build -- stays declarative.
-        VIRTUAL_ENV="$LOCAL_DIR/venv-train" uv pip install "src-train/[local]" axolotl
+        # TWO commands, and in this order. One command asks uv to satisfy both at once,
+        # which is unsatisfiable: axolotl pins antlr4-python3-runtime==4.13.2 and the
+        # hydra-core that dvc[s3] needs contradicts it, so uv walks the whole axolotl
+        # version history and gives up. Installing sequentially lets axolotl's pins land
+        # last and win, which is what we want -- it owns the training stack. Doing it the
+        # other way round (axolotl first) leaves a venv where importing axolotl dies inside
+        # kernels/huggingface_hub.
+        VIRTUAL_ENV="$LOCAL_DIR/venv-train" uv pip install "src-train/[local]"
+        VIRTUAL_ENV="$LOCAL_DIR/venv-train" uv pip install axolotl
+        # Then repair the three pins axolotl's install walks over. Each of these was an
+        # import error at run time, not a warning:
+        #
+        #   antlr4  axolotl requires ==4.13.2, but omegaconf 2.3.1 requires 4.9.* and its
+        #           grammar lexer is GENERATED against 4.9. With 4.13.2 installed, merely
+        #           importing omegaconf raises "Could not deserialize ATN with version 3
+        #           (expected 4)" -- which takes down src-train/train.py and axolotl too,
+        #           since both import it. Nothing here calls antlr directly.
+        #   boto3   axolotl pins botocore back below the boto3 that dvc[s3] and awscli
+        #           brought, and boto3 then cannot import DocumentModifiedShape from it.
+        #   torchvision  needed by Gemma4Processor, and ABI-bound to the torch it was
+        #           built against. Against axolotl's torch it fails with "operator
+        #           torchvision::nms does not exist"; upgrading realigns the pair.
+        VIRTUAL_ENV="$LOCAL_DIR/venv-train" uv pip install --upgrade \
+            "antlr4-python3-runtime==4.9.3" boto3 botocore awscli torchvision
     fi
 
     if "$PY_EVAL" -c "import vllm" 2>/dev/null; then

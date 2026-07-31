@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Pairs kept out of EVERY split -- training, validation and holdout alike.",
+    "",
+    "This is a curation decision, so it lives in git and is reviewed in pull requests,",
+    "not in DVC. Exclude a pair only when the two texts are not a translation of each",
+    "other; a pair that is merely unusual belongs in the Tier A review queue that",
+    "`python src-eval/rules.py` prints, not in here.",
+    "",
+    "Removing a pair does NOT move any other pair between splits: assignment is",
+    "sha256(salt:id) per document, so the other 778 keep the split they already had.",
+    "",
+    "Keys are pair ids, values say why. Keys starting with '_' are ignored."
+  ],
+
+  "0013": "Not a translation. Source is a 309-word overview of addiction risks for people with disabilities; the Leichte Sprache text is a 180-word description of two different brochures about smoking and cannabis. Same topic, different content.",
+  "0224": "Not a translation. 690 words of job adverts reduced to a 19-word list of the roles being advertised. That is a summary, and training on it teaches the model to drop content."
+}

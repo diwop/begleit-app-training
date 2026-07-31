@@ -150,6 +150,12 @@
 * **What didn't work**: Using `dataloader_num_workers: 4` (default) with DeepSpeed CPU offloading. Under CPU offloading, the parent rank processes hold the sharded 238 GB weights in CPU memory. When the PyTorch dataloader spawns worker processes using the default Linux `fork` start method, the worker processes share the parent's memory pages. As the workers load and prefetch data, copy-on-write (CoW) triggers, duplicating memory pages and causing the CPU RAM to balloon rapidly by hundreds of gigabytes until OOMing.
 * **Fix**: Set `dataloader_num_workers: 0` in `config/train-mistral4small.yml`. This forces all data loading to run inside each rank's main process thread, completely eliminating multiprocessing worker spawns and copy-on-write memory replication overhead.
 
+### Iteration 14: Axolotl silently trained on a stale tokenised dataset after the corpus grew from 8 to 780 documents
+* **Error**: No error at all — that is the point. The only symptom was `'epoch': 20` in the log line for step 60 of a 120-step run, which is only possible if the training set holds 3 samples. `load_from_disk` on the cache directory confirmed **3 rows**, dated the day before the corpus was imported, while the freshly added validation set correctly held 37.
+* **What didn't work**: Relying on `dataset_prepared_path: last_run_prepared` to notice new data. Axolotl keys that cache on the dataset *config block* — path, type, chat template, field mappings — and not on the contents of the file the path names. Replacing `data/train/dataset.jsonl` with a 533-document version left the config identical, so the hash was identical and the 8-document cache from the previous day was reused. The run reported a plausible eval-loss curve and plausible Leichte Sprache metrics the whole time, because the *validation* set was new (`test_datasets` had just been added, so its config hash had changed) — which made the output look more trustworthy, not less.
+* **Fix**: `scripts/train.sh` now fingerprints `data/train/dataset.jsonl` and `data/train/validation.jsonl` with `shasum -a 256`, stores it in `last_run_prepared/.data-fingerprint`, and deletes the directory when it no longer matches. A content hash rather than an mtime comparison, because `dvc checkout` rewrites those files and mtimes would force a full re-tokenisation of the corpus on every pull.
+* **Scope**: local iteration only. On RunPod the container clones the repo fresh and `last_run_prepared/` is gitignored, so the cache is always cold there and no published adapter is affected.
+
 # Evaluating
 
 ## Gemma 4

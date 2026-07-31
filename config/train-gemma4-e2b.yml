@@ -33,9 +33,20 @@ sequence_len: 2048
 gradient_checkpointing: true
 optimizer: adamw_torch
 
+# max_steps and the eval cadence are inherited from base.yml (10 and 5) -- same short
+# shape as the production run, so this exercises what production will do.
+#
+# Measured budget on an M1 Max, for when base.yml's max_steps goes up: ~19 s per training
+# step, and ~6 min per evaluation (the eval-loss pass over the validation split plus 8
+# generations of 512 tokens). The evaluations dominate at this length.
+#
+# For reference, the 120-step run that produced the numbers in TODO.md took just under an
+# hour. Setting max_steps here overrides base.yml if you want to repeat it.
 num_epochs: 1
-max_steps: 2
-learning_rate: 0.0001
+learning_rate: 0.0002 # base.yml's production value, not a gentler one
+
+plugins:
+  - validation_metrics.ValidationMetricsPlugin
 
 micro_batch_size: 1
 gradient_accumulation_steps: 1

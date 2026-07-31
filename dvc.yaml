@@ -2,9 +2,17 @@ stages:
   prepare_data:
     cmd: uv run --project src-train python src-train/prepare_dataset.py
     deps:
-      - data/system-prompt.md
+      - config/base.yml # sequence_len decides which pairs are dropped as too long
+      - data/excluded.json # pairs kept out of every split, by hand
       - data/prompt-template.md
       - data/raw/
+      - data/system-prompt.md
+      - src-eval/rules.py # the pairing rule and the Tier A band
       - src-train/prepare_dataset.py
     outs:
-      - data/train/dataset.jsonl # {"id": "<number>", "system": "<content-of-system-prompt>", "user": "<prompt-template with %INPUT% replaced by the Standardsprache text>", "assistant": "<Leichte_Sprache text>"}
+      # Records are {"id", "messages" (system/user/assistant), "original_text", "metrics"}.
+      # The split is a pure function of the id -- see src-train/prepare_dataset.py.
+      - data/train/dataset.jsonl # 70%, what the adapter is fitted to
+      - data/train/validation.jsonl # 10%, convergence signal during training
+      - data/eval/holdout.jsonl # 20%, pulled only by the eval container
+      - data/split_manifest.json # which id went where; copied into the run manifest

@@ -221,3 +221,59 @@ def test_merge_can_be_disabled(mock_cuda, mock_subprocess, monkeypatch):
 
     assert len(targets) == 1, targets
     assert targets[0].endswith("/train-gemma4")
+
+
+def test_merge_by_step_joins_the_two_halves_of_one_evaluation(tmp_path):
+    """Trainer logs eval_loss; the metrics callback logs eval_ls_* right after it.
+
+    Both carry the same step, so the raw history holds two half-rows per evaluation and a
+    naive plot of it shows gaps in every series.
+    """
+    from train import _merge_by_step
+
+    merged = _merge_by_step([
+        {"step": 0, "eval_loss": 4.0},
+        {"step": 0, "eval_ls_distance": 0.26},
+        {"step": 60, "eval_loss": 1.2},
+        {"step": 60, "eval_ls_distance": 0.07},
+    ])
+    assert merged == [
+        {"step": 0, "eval_loss": 4.0, "eval_ls_distance": 0.26},
+        {"step": 60, "eval_loss": 1.2, "eval_ls_distance": 0.07},
+    ]
+
+
+def test_write_eval_metrics_reads_the_last_checkpoint(tmp_path):
+    """Each checkpoint's state holds the whole run, so the newest one is the complete record.
+
+    Sorted numerically, not lexically: 'checkpoint-9' must not beat 'checkpoint-120'.
+    """
+    import json
+    from train import write_eval_metrics
+
+    for step, loss in ((9, 3.0), (120, 1.2)):
+        d = tmp_path / f"checkpoint-{step}"
+        d.mkdir()
+        (d / "trainer_state.json").write_text(json.dumps({
+            "global_step": step,
+            "best_metric": loss,
+            "best_model_checkpoint": str(d),
+            "log_history": [{"step": step, "loss": loss},
+                            {"step": step, "eval_loss": loss},
+                            {"step": step, "eval_ls_distance": 0.07}],
+        }), encoding="utf-8")
+
+    write_eval_metrics(str(tmp_path))
+    written = json.loads((tmp_path / "eval_metrics.json").read_text(encoding="utf-8"))
+    assert written["source"] == "checkpoint-120"
+    assert written["global_step"] == 120
+    assert written["evaluations"] == [
+        {"step": 120, "eval_loss": 1.2, "eval_ls_distance": 0.07}
+    ]
+
+
+def test_write_eval_metrics_survives_a_run_with_no_checkpoint(tmp_path):
+    from train import write_eval_metrics
+
+    write_eval_metrics(str(tmp_path))  # must not raise
+    assert not (tmp_path / "eval_metrics.json").exists()

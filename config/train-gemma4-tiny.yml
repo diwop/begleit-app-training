@@ -12,7 +12,7 @@
 base_model: tiny-random/gemma-4-moe
 
 adapter: lora
-lora_r: 8          # the tiny model's hidden_size is 8, so r=32 would be degenerate
+lora_r: 8          # the the tiny model's hidden_size is 8, so r=32 would be degenerate
 lora_alpha: 16
 
 # Identical to train-gemma4.yml: language model only, vision tower and router excluded.
@@ -29,8 +29,9 @@ tf32: false
 # the vocabulary is the real 262144, so the logits tensor is seq_len x 262144 x 4 bytes and
 # dominates everything else. Measured peak on an M1 Max at 2048: 9.75 GiB for 2 steps,
 # 13.98 GiB over 30. base.yml's 16384 extrapolates to something that will swap a laptop --
-# do NOT inherit it. Axolotl silently drops samples longer than this, which conveniently
-# selects the three shortest of the eight (1749 / 1751 / 1954 tokens).
+# do NOT inherit it. Axolotl silently drops samples longer than this: of the 535 training
+# and 75 validation documents, roughly half survive (the corpus median is ~2000 tokens).
+# That is plenty for a smoke run and is not a quality statement about anything.
 sequence_len: 2048
 
 gradient_checkpointing: false
@@ -41,8 +42,24 @@ optimizer: adamw_torch
 # change any output, which makes the smoke test report a false negative. 30 steps at 1e-2
 # reach 0.14 and alter every prompt. Tuned for a measurable delta, not for quality.
 num_epochs: 10
+# 30, NOT base.yml's 10, and this override has to stay. This config does not train
+# anything -- it checks that an adapter survives train -> serve -- and that check needs an
+# adapter that measurably changes the output. PEFT initialises lora_B to exactly zero, so a
+# barely-trained adapter is mathematically the identity: 2 steps reached max|lora_B| = 3e-4
+# and altered no prompt, which made src-eval/smoke_adapter.py report a false negative. 30
+# steps at lr 1e-2 reach 0.14 and change every prompt. Lowering this re-breaks that test.
 max_steps: 30
 learning_rate: 0.01
+
+# Every 10 rather than base.yml's 5: three evaluations across the 30 steps, and generation
+# is the slow part even on the tiny model. save_steps must equal eval_steps for
+# load_best_model_at_end.
+eval_steps: 10
+save_steps: 10
+
+# Same reason base.yml cannot carry it: OmegaConf.merge replaces lists.
+plugins:
+  - validation_metrics.ValidationMetricsPlugin
 
 # Keep the footprint predictable on a machine someone is also using.
 micro_batch_size: 1

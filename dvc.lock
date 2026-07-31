@@ -3,25 +3,49 @@ stages:
   prepare_data:
     cmd: uv run --project src-train python src-train/prepare_dataset.py
     deps:
+    - path: config/base.yml
+      hash: md5
+      md5: e602f26c68e7cdad2738d42e00150416
+      size: 1984
+    - path: data/excluded.json
+      hash: md5
+      md5: 0f0e712a839cd5a84920992424541fed
+      size: 1126
     - path: data/prompt-template.md
       hash: md5
       md5: 13c652e6b7c3cd9bcf7ff78ba4b67206
       size: 207
     - path: data/raw/
       hash: md5
-      md5: ea467c6fb97086663499421017e56aab.dir
-      size: 140116
-      nfiles: 33
+      md5: df3c99aa6e2652ee510c015ca57b295b.dir
+      size: 4270356
+      nfiles: 1560
     - path: data/system-prompt.md
       hash: md5
       md5: 702bb6cd55b5f8b86fcedfb816e67e7c
       size: 3626
+    - path: src-eval/rules.py
+      hash: md5
+      md5: 88123970d90e172397b6ceb83dd58937
+      size: 15617
     - path: src-train/prepare_dataset.py
       hash: md5
-      md5: f981b558d0704ea3aeca99443e622d5f
-      size: 9057
+      md5: 1ece1ee5432638cd2d6a788898e5cf12
+      size: 14476
     outs:
+    - path: data/eval/holdout.jsonl
+      hash: md5
+      md5: e9d7e25ead6671b05f22bd5bda9f3085
+      size: 2156488
+    - path: data/split_manifest.json
+      hash: md5
+      md5: 2e0f05249eba0e57f5331f3cfae66eae
+      size: 13179
     - path: data/train/dataset.jsonl
       hash: md5
-      md5: 1291fc2c082e83301d80f5b717f42e19
-      size: 206234
+      md5: 1b61aa9b38d448ed9a7464b49e1e5d82
+      size: 6581833
+    - path: data/train/validation.jsonl
+      hash: md5
+      md5: 16ff958f6f40e1153e1981c5e0ef94e9
+      size: 993567

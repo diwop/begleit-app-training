@@ -6,9 +6,11 @@ deepspeed_param_persistence_threshold: 0
 deepspeed_offload_param: false
 deepspeed_offload_optimizer: false
 
-# Liger Kernel Memory & Speed Optimizations
+# Liger Kernel Memory & Speed Optimizations, plus the Leichte Sprache metrics that ride
+# along with each evaluation (src-train/validation_metrics.py).
 plugins:
   - axolotl.integrations.liger.LigerPlugin
+  - validation_metrics.ValidationMetricsPlugin
 liger_rope: true
 liger_rms_norm: true
 liger_glu_activation: true

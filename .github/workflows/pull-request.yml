@@ -17,6 +17,13 @@ jobs:
   validate-data:
     name: Check if dataset was prepared
     runs-on: ubuntu-latest
+    # The default DVC remote is s3://diwop-analysis/dvc, so this job needs credentials that
+    # can read that bucket. It used to need none, because the remote was the local
+    # data/s3-mock directory. These three repository secrets must exist or the pull fails.
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'eu-central-1' }}
     steps:
       - uses: actions/checkout@v6
       - uses: iterative/setup-dvc@v3

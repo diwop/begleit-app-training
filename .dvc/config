@@ -1,5 +1,11 @@
 [core]
     autostage = true
-    remote = local_test_remote
+    remote = s3
+# The corpus itself lives at s3://diwop-analysis/training-data/ under the inconsistent
+# names src-train/import_raw.py normalises; this prefix holds the DVC-hashed copies.
+['remote "s3"']
+    url = s3://diwop-analysis/dvc
+# Kept for offline work: `dvc pull -r local_test_remote` needs no AWS credentials, but it
+# only holds the eight-document corpus this project started with.
 ['remote "local_test_remote"']
     url = ../data/s3-mock

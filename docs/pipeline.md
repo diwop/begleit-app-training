@@ -12,6 +12,95 @@ The training and evaluation phases are split and run on separate containers:
 
 By default, the launch script runs in `MODE=eval`.
 
+## Data, and what each container may see
+
+`docs/data.md` has the detail. What matters for the pipeline:
+
+* `scripts/train.sh` pulls `data/train/dataset.jsonl`, `data/train/validation.jsonl` and
+  `data/split_manifest.json` **by name**. A bare `dvc pull` would also fetch
+  `data/eval/holdout.jsonl`, so it aborts if that file turns up in the container anyway.
+* `scripts/eval.sh` pulls the holdout, the manifest, and the training set (the latter only
+  so `src-eval/smoke_adapter.py` has its highest-signal case).
+* The DVC remote is `s3://diwop-analysis/dvc`. **This is a different bucket from
+  `S3_BUCKET`** (`diwop-leichte-sprache`), where adapters and logs go. The pod's AWS
+  credentials must be able to read both, or the pull fails.
+* Training writes `run_manifest.json` next to the adapter: base model, config hash, and the
+  exact ids in each split. That file is what lets an eval run on a different pod claim its
+  score came from documents the adapter never saw.
+
+## Validation during training
+
+`config/base.yml` points `test_datasets` at `data/train/validation.jsonl`, so an eval loss
+is produced per epoch and the best checkpoint is kept (`load_best_model_at_end` on
+`eval_loss`).
+
+Eval loss alone cannot tell "learned the register" from "memorised the corpus's phrasing",
+so `src-train/validation_metrics.py` rides along: at each evaluation it generates greedily
+from a few validation sources and scores the output with `src-eval/rules.py` plus the
+readability formulas, reported as the **gap to the human reference** for those same
+documents. `eval_ls_distance` collapses those gaps into one number to watch converge — a
+placeholder for the LLM-as-a-judge score that should replace it.
+
+Generation under DeepSpeed ZeRO-3 re-gathers sharded parameters per token and is therefore
+slow. The defaults are small on purpose; check `eval_ls_seconds` in the log before raising
+them.
+
+| variable | default | effect |
+|---|---|---|
+| `VALIDATION_METRICS_SAMPLES` | 4 | validation documents generated from |
+| `VALIDATION_METRICS_MAX_TOKENS` | 256 | cap per generation |
+| `VALIDATION_METRICS_OFF` | unset | `1` skips generation; eval loss only |
+
+The callback never raises: a failure prints a warning and the run continues.
+
+### Where the numbers end up
+
+Axolotl has no metrics store of its own — everything goes through HuggingFace `Trainer`,
+which keeps each logged value in `trainer_state.json` under `log_history`. That file only
+exists inside `checkpoint-*/`, which is a poor home for it: `save_total_limit` rotates
+checkpoints away, and `src-eval/smoke_adapter.py` deliberately skips `checkpoint-*` when
+fetching an adapter from S3, so the eval container would never see the curve behind the
+weights it serves. Two things therefore sit next to the adapter and travel with it:
+
+```
+/app/output/adapter/train-gemma4/
+  ├─ adapter_model.safetensors
+  ├─ run_manifest.json    # base model, config hash, the ids in each split
+  ├─ eval_metrics.json    # one row per evaluation, plus the training-loss curve
+  └─ runs/                # TensorBoard event files
+```
+
+`eval_metrics.json` merges the two halves of each evaluation into one row. `Trainer` logs
+`eval_loss` when it finishes evaluating and the metrics callback logs its `eval_ls_*`
+numbers immediately afterwards, both under the same step — so the raw `log_history` holds
+two half-rows per evaluation, and anything plotting it naively shows gaps in every series.
+
+For curves, `use_tensorboard: true` in `config/base.yml` writes event files under
+`output_dir/runs/`. No account, server or API key:
+
+    tensorboard --logdir .local/output/adapter/train-gemma4-e2b
+
+### Watching a run on RunPod, without SSH
+
+`src-train/train.py` publishes to S3 once, after the whole pipeline finishes. Until then
+the bucket would hold nothing, so `scripts/lib/s3_sync.sh` runs alongside training and
+pushes the TensorBoard events and the log every `S3_SYNC_INTERVAL` seconds (default 60):
+
+    aws s3 sync s3://$S3_BUCKET/live/train-gemma4/runs ./runs
+    tensorboard --logdir ./runs
+
+The prefix is `live/<config-name>/`, fixed rather than run-id'd, so the address is the same
+for every run. Each run overwrites it; the durable per-run copy is the one `train.py`
+writes under `<run-id>/<config-name>/` at the end.
+
+Only the events and the log go up live — **not** `checkpoint-*/`, which holds optimizer
+state measured in gigabytes and would spend the pod's uplink on data nobody is watching.
+A side effect worth having: a pod that dies at hour three no longer takes its TensorBoard
+history with it.
+
+Nothing else is wired up. Axolotl also supports Weights & Biases, MLflow and Comet through
+`use_wandb` / `use_mlflow` / `use_comet`; none are set.
+
 ## Persistent Caching and Output
 
 To avoid downloading heavy model weights on every run, and to save your training outputs, make sure to mount a persistent network volume to `/app`. 

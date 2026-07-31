@@ -58,11 +58,13 @@ def test_pair_ratio_band():
     inflated = analyse_pair("ein Wort", " ".join(["Wort"] * 40), thresholds)
     assert inflated.length_ratio == 20.0 and not inflated.ratio_in_band
 
-    healthy = analyse_pair(" ".join(["Wort"] * 10), " ".join(["Wort"] * 22), thresholds)
-    assert healthy.length_ratio == 2.2 and healthy.ratio_in_band
-
+    # The corpus median is 0.61: a Leichte Sprache text of roughly the source's length is
+    # the normal case, not a flag. Only the tails are flagged.
     flat = analyse_pair(" ".join(["Wort"] * 10), " ".join(["Wort"] * 11), thresholds)
-    assert not flat.ratio_in_band
+    assert flat.length_ratio == 1.1 and flat.ratio_in_band
+
+    gutted = analyse_pair(" ".join(["Wort"] * 100), " ".join(["Wort"] * 10), thresholds)
+    assert not gutted.ratio_in_band
 
 
 def test_empty_source_does_not_divide_by_zero():

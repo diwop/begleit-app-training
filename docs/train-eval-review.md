@@ -8,6 +8,22 @@ of branch `evaluate-separately-jpods` (2026-07-30).
 See [Decision: eval container vs. training container](#decision-eval-container-vs-training-container)
 for why that is workable and what it costs.
 
+> **Superseded in part (2026-07-31).** The corpus is now 780 pairs, not 8, which settles
+> some of this and refutes one of its premises. See `docs/data.md`.
+>
+> * **Done:** P0-3 (split + `run_manifest.json`), P1-2 (validation loss during training,
+>   plus generated rule metrics — `src-train/validation_metrics.py`). P0-2's ruleset exists
+>   as `src-eval/rules.py`.
+> * **Refuted:** the claim under Finding 1 that Leichte Sprache expands a text 1.5–3×. That
+>   came from the eight documents available at the time, whose median ratio was 2.28. Over
+>   780 professional pairs the median is **0.61** — the Leichte Sprache side is usually
+>   *shorter*. The Tier A band has been recalibrated from `[1.3, 3.5]` to `[0.2, 2.2]`; the
+>   old band flagged 89% of the corpus. The four numbers in the table below, and every
+>   argument that rests on n=8, should be read as history.
+> * **Still open, and now the main data risk:** spot checks found pairs whose two texts
+>   share a topic but are not translations of each other. That is P2-1, and it matters more
+>   than the length ratio ever did.
+
 ## The four numbers that frame everything
 
 | | value | where |

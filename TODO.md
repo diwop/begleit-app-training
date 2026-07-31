@@ -4,7 +4,9 @@ Aktueller Git-Branch: evaluate-separately-jpods
 
 # Next steps (high level)
 
-Mit den 800 Texten (- 20 % Testsplit) trainieren (+ die Daten dann über DVC in AWS ablegen)
+~~Mit den 800 Texten (- 20 % Testsplit) trainieren (+ die Daten dann über DVC in AWS
+ablegen)~~ — **Daten und Splits stehen** (siehe unten, Punkt 0); der erste echte
+Trainingslauf darauf steht noch aus.
 
 Inferenzlauf mit
 - Testsplit
@@ -20,7 +22,88 @@ Inferenzlauf mit
 
 # Offene Aufgaben
 
-## 1. Linux-Pfad auf RunPod verifizieren  ← nächster Schritt
+## 0. Erster Lauf auf dem echten Datensatz  ← nächster Schritt
+
+Der Datenteil ist fertig, der Lauf darauf nicht. Was jetzt steht:
+
+- **780 Paare** in `data/raw`, als *ein* DVC-Verzeichnis (vorher 16 Einzel-Pointer).
+  Import und Namens-Normalisierung: `src-train/import_raw.py`.
+- **DVC-Remote** ist `s3://diwop-analysis/dvc`. ⚠️ Das ist ein **anderer Bucket** als
+  `S3_BUCKET` (`diwop-leichte-sprache`). Ob die AWS-Credentials im RunPod-Template auch
+  `diwop-analysis` lesen dürfen, ist **ungeprüft** — wenn nicht, schlägt `dvc pull` im
+  Container fehl. Das ist die wahrscheinlichste Stolperstelle beim ersten Lauf.
+- **Splits** 70/10/20 → `data/train/dataset.jsonl` (533), `data/train/validation.jsonl`
+  (75), `data/eval/holdout.jsonl` (167). Die Zuordnung ist `sha256(salt:id)`, kein
+  Shuffle — neue Dokumente verschieben kein einziges altes über die Holdout-Grenze.
+- **`data/excluded.json`**: Paare, die aus *allen* Splits fliegen, mit Begründung. Liegt in
+  git statt in DVC, damit die Entscheidung im PR review-bar ist. Aktuell `0013` und `0224`
+  — beides keine Übersetzungen, sondern andere Texte zum selben Thema. Weil die
+  Split-Zuordnung pro ID läuft, verschiebt ein Ausschluss nichts anderes.
+- **Holdout-Sperre**: `scripts/train.sh` zieht nur benannte Dateien und bricht im Container
+  ab, wenn `data/eval/holdout.jsonl` doch da liegt.
+- **Validation im Training**: `test_datasets` → Eval-Loss pro Epoche,
+  `load_best_model_at_end` auf `eval_loss`, plus `src-train/validation_metrics.py`
+  (generiert auf ein paar Validation-Samples und misst `src-eval/rules.py` +
+  Flesch/Wiener als Abstand zur menschlichen Referenz).
+- **`run_manifest.json`** liegt jetzt neben dem Adapter: Basismodell, Config-Hash und die
+  exakten IDs pro Split.
+
+Offen und noch **nicht** verifiziert:
+
+- **GitHub-Secrets**: Der CI-Job `validate-data` macht `dvc pull`. Das brauchte bisher keine
+  Credentials (Remote war das lokale `data/s3-mock`), jetzt schon. `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` und optional `AWS_DEFAULT_REGION` müssen als Repository-Secrets
+  angelegt werden, sonst schlägt jeder PR-Build fehl.
+- Generierung im Callback unter **DeepSpeed ZeRO-3** — lokal auf MPS läuft sie, auf
+  mehreren Karten ist sie ungetestet. Sie ist gekapselt: ein Fehler loggt eine Warnung und
+  killt den Lauf nicht. Notausgang: `VALIDATION_METRICS_OFF=1`.
+- Laufzeit dieser Generierung auf dem 26B. Defaults sind bewusst klein
+  (`VALIDATION_METRICS_SAMPLES=4`, `VALIDATION_METRICS_MAX_TOKENS=256`); vor dem Hochdrehen
+  einmal `eval_ls_seconds` im Log ansehen.
+- `num_epochs: 3` steht weiter auf 3. Jetzt gibt es zum ersten Mal eine Eval-Kurve, an der
+  man das entscheiden kann.
+
+**Erster echter Lauf auf E2B (120 Schritte, 279 Trainingsdokumente, 2026-07-31):**
+
+| Schritt | `eval_loss` | `eval_ls_distance` | kurze Sätze | Bindestrich-Komposita/100w |
+|---|---|---|---|---|
+| 0 (Basis) | 4.016 | 0.2625 | 88 % | 3.95 |
+| 60 | 1.264 | **0.0706** | 78 % | **2.05** |
+| 120 | **1.204** | 0.2082 | 63 % | 3.85 |
+| Mensch | — | 0 | 72 % | 1.40 |
+
+Zwei Dinge daraus:
+
+1. **Die Daten lehren den Stil.** Nach 60 Schritten schreibt das Modell
+   `Boccia-Kugel` statt `Boccia Kugel`, einen Satz pro Zeile (100 %, exakt auf
+   Referenzniveau) und Aufzählungen als Listen. Das ist die Typografie der Leichten
+   Sprache, gelernt aus 60 Beispielen.
+2. **`eval_loss` und `eval_ls_distance` laufen auseinander.** Zwischen Schritt 60 und 120
+   sinkt der Loss weiter (1.264 → 1.204), der Stilabstand verdreifacht sich aber
+   (0.0706 → 0.2082) — die Bindestriche gehen fast vollständig wieder verloren.
+   `load_best_model_at_end` auf `eval_loss` hat deshalb **checkpoint-120 gewählt, also den
+   schlechter formatierten**. Vor dem 26B-Lauf zu entscheiden, ob
+   `metric_for_best_model` bleibt oder auf eine Kombination umgestellt wird.
+
+   ⚠️ `eval_ls_distance` steht auf 8 Validation-Samples, `eval_loss` auf 37 — ein Teil des
+   Ausschlags kann Rauschen sein. Vor einer Entscheidung `VALIDATION_METRICS_SAMPLES`
+   hochdrehen und den Lauf wiederholen.
+
+   `eval_ls_distance` sollte **nicht** allein zum Auswahlkriterium werden: Bei Schritt 60
+   behauptet das Modell `Dafür braucht man einen Rollstuhl` — frei erfunden, die Quelle sagt
+   „eingeschränkte Mobilität". Der Stil war da am besten, der Inhalt am schlechtesten. Genau
+   dafür braucht es P2-1 (Bedeutungserhalt) als Gegengewicht.
+
+**Datenqualität, neu und unangenehm:** Der Median des Wortzahl-Verhältnisses
+(Leichte Sprache ÷ Standard) liegt über alle 780 Paare bei **0.61** — die Leichte-Sprache-
+Seite ist meistens *kürzer*. Die Annahme in `docs/train-eval-review.md`, Leichte Sprache
+expandiere um 1.5–3x, stammt aus den ursprünglichen 8 Dokumenten und gilt für den echten
+Korpus nicht. Das Tier-A-Band in `src-eval/rules.py` ist entsprechend neu kalibriert
+(`[0.2, 2.2]`, 5./95. Perzentil), flaggt jetzt ~11% statt 89%. Stichproben zeigen aber ein
+tieferliegendes Problem: Es gibt Paare, die dasselbe *Thema* behandeln, aber keine
+Übersetzungen voneinander sind. Siehe `docs/data.md`.
+
+## 1. Linux-Pfad auf RunPod verifizieren
 
 Die vereinheitlichten Skripte sind **ausschließlich auf macOS getestet**. `src-train/train.py`
 hat jetzt eine Geräte-Erkennung (`detect_accelerator()`), und DeepSpeed sowie
@@ -132,6 +215,33 @@ RunPod-Adapter nachsehen, und bei Bedarf neu trainieren.
   auf `curl` umstellen — das vLLM-Image hat keines von beiden.
 - **Trainingsdaten**: 8 Beispiele. Der Adapter wird angewandt, aber die Wirkung ist
   entsprechend klein. Das ist die eigentliche Begrenzung, nicht die Inferenz.
+- **`scripts/setup.sh` durch einen echten Lockfile ersetzen.** Das lokale Training-venv wird
+  aktuell in vier Schritten von Hand zusammengebaut: `src-train/[local]`, dann `axolotl`,
+  dann ein Reparatur-Schritt, der drei Pins zurückdreht, die axolotl überschreibt
+  (`antlr4-python3-runtime==4.9.3` für omegaconf, `boto3`/`botocore` für dvc[s3] und awscli,
+  `torchvision` gegen die ABI von axolotls torch). Jeder dieser Punkte war ein
+  `ImportError` zur Laufzeit, keiner davon eine Warnung.
+
+  Das ist Reihenfolge-abhängig und damit fragil. Gewollt wäre ein konsistenter,
+  plattformübergreifender Lockfile, den `uv sync` einfach auflöst — eine deklarative
+  Wahrheit statt einer Abfolge von Kommandos.
+
+  Der Grund, warum es das heute nicht gibt, steht in `src-train/pyproject.toml`: axolotl
+  pinnt `antlr4-python3-runtime==4.13.2`, `dvc[s3]` zieht ein `hydra-core`, das dem
+  widerspricht, und `uv`s universeller Lock muss alle Plattformen gleichzeitig erfüllen —
+  diese Kombination ist unlösbar. Mögliche Auswege, in der Reihenfolge, in der sie
+  wahrscheinlich funktionieren:
+  1. `dvc[s3]` aus dem Training-venv herausnehmen und den DVC-Pull einem eigenen Tool-venv
+     überlassen (`uv tool install dvc[s3]`). Damit verschwindet der hydra-Konflikt komplett,
+     und `scripts/train.sh` ruft ohnehin schon eine `dvc`-Binary auf.
+  2. `[tool.uv] constraint-dependencies` bzw. `override-dependencies` nutzen, um axolotls
+     antlr-Pin einmal zentral zu überstimmen, statt hinterher zu reparieren.
+  3. Getrennte Lockfiles pro Plattform (`uv lock --python-platform`), falls ein universeller
+     Lock unerreichbar bleibt.
+
+  **Der RunPod-Pfad ist davon nicht betroffen** — dort installiert `setup.sh` nur
+  `uv pip install src-train/` auf das fertige Axolotl-Image, ohne axolotl selbst.
+
 - **`src-eval/evaluation.py`** ist verwaist: die alte Readability-Metrics-Pipeline, wird von
   keinem Skript mehr aufgerufen, importiert vLLM auf Modulebene und hängt an `/app`-Pfaden.
   Entweder reaktivieren oder löschen.

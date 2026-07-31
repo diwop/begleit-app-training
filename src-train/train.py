@@ -2,6 +2,7 @@
 import os
 import json
 import time
+import hashlib
 import shutil
 import datetime
 import torch
@@ -9,7 +10,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Tuple
 from omegaconf import DictConfig, OmegaConf
 
 # Force Hugging Face to use the persistent volume cache directory to prevent downloading to
@@ -43,6 +44,99 @@ class SyncTarget:
     """A directory to publish and the S3 prefix it belongs under."""
     local_dir: str
     s3_prefix: str
+
+
+def _merge_by_step(entries: Iterable[dict]) -> List[dict]:
+    """One row per evaluation, not two.
+
+    Trainer logs `eval_loss` when it finishes evaluating, and the callback in
+    src-train/validation_metrics.py logs its `eval_ls_*` numbers immediately afterwards.
+    Both carry the same `step`, so the history holds two half-rows per evaluation -- which
+    makes the file annoying to read and every naive plot of it wrong.
+    """
+    merged: Dict[int, dict] = {}
+    for entry in entries:
+        merged.setdefault(entry.get("step"), {}).update(entry)
+    return [merged[step] for step in sorted(merged)]
+
+
+def write_eval_metrics(output_dir: str) -> None:
+    """Lift the metric history out of the checkpoints and into one readable file.
+
+    HF Trainer keeps every logged number in `trainer_state.json` under `log_history`, but
+    only inside `checkpoint-*/`. That is an awkward place for it: `save_total_limit` rotates
+    checkpoints away, `save_strategy: "no"` would drop the history entirely, and
+    src-eval/smoke_adapter.py deliberately skips `checkpoint-*` when fetching an adapter
+    from S3 -- so the eval container could never see the curve that produced the weights it
+    is serving. Written next to the adapter, it travels with it.
+
+    This is `eval_metrics.json` from docs/train-eval-review.md P1-1.
+    """
+    checkpoints = sorted(Path(output_dir).glob("checkpoint-*"),
+                         key=lambda p: int(p.name.split("-")[-1]))
+    if not checkpoints:
+        print(f"⚠️ [WARNING] No checkpoint under {output_dir}; no metric history to save.")
+        return
+
+    # The last checkpoint's state contains the whole run, not just its own step.
+    state = json.loads((checkpoints[-1] / "trainer_state.json").read_text(encoding="utf-8"))
+    history: List[dict] = state.get("log_history", [])
+
+    metrics = {
+        "source": str(checkpoints[-1].name),
+        # Which metric this is comes from the config; run_manifest.json pins that by hash.
+        "best_metric": state.get("best_metric"),
+        "best_model_checkpoint": (Path(state["best_model_checkpoint"]).name
+                                  if state.get("best_model_checkpoint") else None),
+        "global_step": state.get("global_step"),
+        # Split by kind because the two are read for different reasons: the evaluations are
+        # the result, the training entries are how you tell overfitting from underfitting.
+        "evaluations": _merge_by_step(e for e in history if any(k.startswith("eval_") for k in e)),
+        "training": [e for e in history if "loss" in e],
+    }
+    target = Path(output_dir) / "eval_metrics.json"
+    target.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8")
+    print(f"📊 Wrote {target} ({len(metrics['evaluations'])} evaluations)", flush=True)
+
+
+def write_run_manifest(output_dir: str, config_path: str, merged_cfg: DictConfig,
+                       run_id: str) -> None:
+    """Record what this run trained on, next to the adapter it produced.
+
+    Evaluation happens in a different container on a different pod, so nothing physically
+    ties a score to the run that earned it. This file is that tie: it names the base model,
+    hashes the resolved config, and copies the split manifest, so the eval container can
+    show that the documents it scored are the ones this adapter never saw.
+    """
+    target = Path(output_dir) / "run_manifest.json"
+    if not target.parent.is_dir():
+        # Axolotl created this directory to write the adapter into. If it is not there,
+        # the run did not produce one and there is nothing to describe.
+        print(f"⚠️ [WARNING] {target.parent} does not exist; skipping the run manifest.")
+        return
+
+    split_manifest_path = Path("data/split_manifest.json")
+    split_manifest = (json.loads(split_manifest_path.read_text(encoding="utf-8"))
+                      if split_manifest_path.exists() else None)
+    if split_manifest is None:
+        print(f"⚠️ [WARNING] {split_manifest_path} is missing; the run manifest cannot "
+              f"record which ids were held out.")
+
+    resolved = OmegaConf.to_yaml(merged_cfg)
+    manifest = {
+        "run_id": run_id,
+        "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "config": config_path,
+        "config_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest(),
+        "base_model": str(merged_cfg.get("base_model", "")),
+        "num_epochs": merged_cfg.get("num_epochs"),
+        "sequence_len": merged_cfg.get("sequence_len"),
+        "split_manifest": split_manifest,
+    }
+    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8")
+    print(f"📝 Wrote {target}", flush=True)
 
 def detect_accelerator() -> Tuple[str, int]:
     """Returns (accelerator, worker_count).
@@ -413,6 +507,9 @@ def main():
         output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus, accelerator)
         config_name = os.path.basename(config_yaml_path).replace(".yml", "").replace(".yaml", "")
         sync_targets.append(SyncTarget(output_path, f"{run_id}/{config_name}"))
+
+        write_run_manifest(output_path, config_yaml_path, merged_config_data, run_id)
+        write_eval_metrics(output_path)
 
         # Post-training Merge and Quantization
         base_model_id = str(merged_config_data.get("base_model") or "")
