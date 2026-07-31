@@ -94,6 +94,70 @@ with deepspeed.zero.Init(config_dict_or_path=cfg):
 x = torch.ones(2, 2, device="cuda", dtype=torch.float32)
 print("result", (x @ x).sum().item())
 """),
+
+    # ---- Stages 0-7 pass on a healthy pod. Everything below closes the remaining gap to
+    # the real pipeline, one element at a time: the launcher, OUR generated DeepSpeed
+    # config, and train_patched.py's monkeypatches. The first rung that fails is the cause.
+
+    ("under_accelerate", "`accelerate launch` itself does not break it", """
+import os, subprocess, sys, tempfile
+body = "import torch\\nx = torch.ones(2, 2, device=torch.device(0))\\nprint('result', x.matmul(x).sum().item())\\n"
+with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+    f.write(body); path = f.name
+subprocess.run([sys.executable, "-m", "accelerate.commands.launch",
+                "--num_machines", "1", "--num_processes", "1", path], check=True)
+"""),
+
+    ("under_accelerate_deepspeed", "accelerate + OUR generated ZeRO-3 config does not break it", """
+import os, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else ".")
+sys.path.insert(0, "/tmp/repo/src-train")
+from train import generate_runtime_deepspeed
+# Exactly what config/train-gemma4.yml asks for.
+ds = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False).name
+generate_runtime_deepspeed(ds, cpu_checkpointing=True, offload_optimizer=True,
+                           offload_param=True, param_persistence_threshold=0)
+body = "import torch\\nx = torch.ones(2, 2, device=torch.device(0))\\nprint('result', x.matmul(x).sum().item())\\n"
+with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+    f.write(body); path = f.name
+subprocess.run([sys.executable, "-m", "accelerate.commands.launch",
+                "--num_machines", "1", "--num_processes", "1",
+                "--use_deepspeed", "--deepspeed_config_file", ds, path], check=True)
+"""),
+
+    ("with_production_ds_config", "deepspeed.initialize with OUR exact config does not break it", """
+import os, sys, torch, deepspeed, json
+sys.path.insert(0, "/tmp/repo/src-train")
+from train import generate_runtime_deepspeed
+os.environ.setdefault("MASTER_ADDR", "localhost"); os.environ.setdefault("MASTER_PORT", "29557")
+os.environ.setdefault("RANK", "0"); os.environ.setdefault("LOCAL_RANK", "0")
+os.environ.setdefault("WORLD_SIZE", "1")
+path = "/tmp/ds-probe.json"
+generate_runtime_deepspeed(path, cpu_checkpointing=True, offload_optimizer=True,
+                           offload_param=True, param_persistence_threshold=0)
+cfg = json.load(open(path))
+# The generated file uses "auto" for batch sizes; DeepSpeed needs real numbers standalone.
+cfg["train_batch_size"] = 1; cfg["train_micro_batch_size_per_gpu"] = 1
+cfg["gradient_accumulation_steps"] = 1; cfg.pop("gradient_clipping", None)
+deepspeed.init_distributed(dist_backend="nccl")
+model = torch.nn.Linear(8, 8)
+engine, *_ = deepspeed.initialize(model=model, model_parameters=model.parameters(), config=cfg)
+x = torch.ones(2, 2, device="cuda", dtype=torch.float32)
+print("result", (x @ x).sum().item())
+"""),
+
+    ("after_train_patched", "train_patched.py's monkeypatches do not break it", """
+import os, sys
+sys.path.insert(0, "/tmp/repo/src-train")
+os.environ.setdefault("MASTER_ADDR", "localhost"); os.environ.setdefault("MASTER_PORT", "29558")
+os.environ.setdefault("RANK", "0"); os.environ.setdefault("LOCAL_RANK", "0")
+os.environ.setdefault("WORLD_SIZE", "1")
+import runpy, torch
+# Import for its side effects only; __main__ guard keeps fire.Fire from running.
+runpy.run_path("/tmp/repo/src-train/train_patched.py", run_name="probe")
+x = torch.ones(2, 2, device=torch.device(0))
+print("result", x.matmul(x).sum().item())
+"""),
 ]
 
 
