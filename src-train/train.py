@@ -342,15 +342,29 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
     # metric to choose a checkpoint by. Nothing is measured in this mode; the run produces
     # weights and no evidence that they are any good.
     if str(merged_cfg.get("eval_strategy", "")).lower() in ("no", "none"):
-        # eval_steps has to go with it -- axolotl's schema rejects the pair outright:
-        #   "eval_strategy and eval_steps mismatch. Please set eval_strategy to 'steps'
-        #    or remove eval_steps."
-        # save_strategy/save_steps stay: checkpoints are what eval_metrics.json and the
-        # published adapter are read from, and they are unrelated to evaluating.
+        # test_datasets has to go, and it is the ONLY thing that actually works.
+        # axolotl/core/builders/base.py:515 decides evaluation like this:
+        #
+        #   if not self.eval_dataset and self.cfg.val_set_size == 0:
+        #       training_args_kwargs["eval_strategy"] = "no"     # the only real off switch
+        #   elif self.cfg.eval_steps:      ... eval_on_start = True
+        #   elif self.cfg.eval_strategy:   ... eval_on_start = True
+        #
+        # `self.cfg.eval_strategy` is the STRING "no", which is truthy, so asking for
+        # eval_strategy: no lands in the third branch and switches eval_on_start ON. HF
+        # then evaluates once before training regardless of the strategy
+        # (trainer.py:1514, `if args.eval_on_start`), which is why a run with evaluation
+        # supposedly disabled still died in prediction_step at step 0.
+        #
+        # eval_steps goes too, or axolotl's schema rejects the pair. save_strategy and
+        # save_steps stay: checkpoints feed eval_metrics.json and the published adapter,
+        # and have nothing to do with evaluating.
+        merged_cfg.pop("test_datasets", None)
         merged_cfg.pop("eval_steps", None)
         merged_cfg["load_best_model_at_end"] = False
-        print("⚠️  eval_strategy=no: eval_steps dropped, load_best_model_at_end forced "
-              "off, and this run produces NO validation numbers at all.", flush=True)
+        print("⚠️  eval_strategy=no: test_datasets and eval_steps dropped, "
+              "load_best_model_at_end forced off. This run produces NO validation "
+              "numbers at all.", flush=True)
 
     # Extract DeepSpeed tuning settings from Axolotl YAML if configured
     cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
