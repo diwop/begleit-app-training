@@ -158,13 +158,6 @@
 
 ### Iteration 15: every run dies in cuBLAS — two cuBLAS builds loaded at once
 * **Error**: `RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE when calling cublasSgemm(...)` at `modeling_gemma4.py:1170`, the rotary embedding, on the FIRST evaluation — before any training step. Reproduced on 1x H100 (sm_90), 1x RTX PRO 6000 Blackwell (sm_120) and 2x L40S (sm_89, two ranks).
-* **Not the cause** — each of these was tested on a pod and refuted, so do not spend a run on them again:
-  * *Hardware, GPU count, VRAM, sequence length.* Four combinations, identical failure. The first eval sample is ~3.5k tokens while training samples in the same run reach 10.8k.
-  * *The data.* No empty content in any of the 608 records.
-  * *Gemma 4's hybrid attention.* `ATTN_IMPLEMENTATION=sdpa GEMMA4_HYBRID_ATTN=0` crashes identically, and does not even OOM.
-  * *A degenerate matmul.* `ROPE_DEBUG=1` printed the arguments: `m=256` (= `global_head_dim`/2, correct), `n=1791`, `k=1`, one device, sane strides. Valid, and rejected anyway.
-  * *ZeRO-3 CPU offload.* `DEEPSPEED_OFFLOAD=0` moved `alloc` from 24 MiB to 49539 MiB — the weights became resident, and it still crashed.
-  * *TF32, or a regression in the mutable `main` image tag.* Refuted by the successful run of the same morning: same image, `cudaDriverVersion 13000`, `NCCL 2.28.9+cuda13.0`, sm_120 and `tf32: true`, trained to completion. The rotary embedding's fp32 matmul ran thousands of times there.
 * **Root cause**: the image ships **two** CUDA installations — a full one under `/usr/local/cuda-13.0`, and a second copy inside torch's pip wheels under `site-packages/nvidia/cu13/lib`. They are different builds. The container starts with
 
       LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
@@ -175,22 +168,18 @@
       /usr/local/cuda-13.0/.../libcublasLt.so.13.0.0.19                  13.0.0.19  (image)
 
   cuBLAS delegates nearly every gemm to cuBLASLt, so the CUDA context, the driver and allocation all work while every matmul is rejected.
-* **Fix**: `scripts/lib/platform.sh` prepends the wheel's own library directory to `LD_LIBRARY_PATH` on linux, asking the interpreter where its wheels live rather than hardcoding a python version. `scripts/train.sh` keeps a ten-second 2x2 matmul as a pre-flight so a regression is caught before the 51 GB download rather than 20 minutes in.
-* **The measurement that settled it.** Both entry points fail, which is what distinguishes a broken *library* from a broken kernel path:
+* **Why it is intermittent**: which copy wins depends on the loader environment the container starts with, and on nothing else — not the commit, the image digest, the driver, NCCL or the card. Two pods from one image differ, one pod flips across a restart, and the same commit trained at 08:39 UTC and failed from ~15:20 UTC across sm_89, sm_90 and sm_120.
+* **How to check** — installed version and loaded library are different questions, and only the second one matters here:
 
-      [0] alloc                      PASS
-      [1] fp32   cublasSgemm         FAIL
-      [2] bf16   cublasGemmEx        FAIL   <- different entry point, same error
-      [3] fp32   TF32 off            FAIL
+      python -c "import torch; torch.ones(1, device=0); \
+        print([l.split()[-1] for l in open('/proc/self/maps') if 'cublas' in l])"
 
-  Everything else was symmetrical with a healthy pod: identical package versions (`nvidia-cublas 13.1.0.3`, `torch 2.10.0+cu130`, `numpy 2.3.5`, `triton 3.6.0`), no processes on the GPU, `0MiB / 97887MiB` used, no ECC errors. Only the loaded `.so` paths differed. `python -c "import torch; torch.ones(1, device=0); print([l.split()[-1] for l in open('/proc/self/maps') if 'cublas' in l])"` is the one-line check.
-* **Why nothing observable distinguished the pods.** Which copy wins depends only on the loader environment the container happens to start with — not on the commit, the image digest (`fca53a8a...`, unchanged since 2026-06-24), the driver (`13000`), NCCL (`2.28.9+cuda13.0`) or the card. So two pods from one image differ, one pod flips across a restart, and the identical commit trained at 08:39 UTC and failed from ~15:20 UTC across sm_89, sm_90 and sm_120. Every environment comparison ran on the wrong axis: `pip list` was always identical, because the packages were never the variable.
-* **Why it took a day to see.** The failure surfaces at the first fp32 matmul of the first forward pass, which happens to be Gemma 4's rotary embedding, inside an evaluation this branch had just introduced. Everything pointed at the new code. Roughly a dozen hypotheses were each tested on a GPU pod and refuted — hardware, GPU count, VRAM, sequence length, token ids, both attention implementations, TF32, ZeRO-3 offload, the DeepSpeed engine, the eval path, the image, PyPI drift, our dependency install, the allocator config, and an orphaned process holding the card.
-* **Four habits worth keeping**:
-  1. Run the last-known-good commit *first* when something that used to work stops working. Here it excluded the whole branch in one run, and was attempted only after a dozen pod cycles.
-  2. When a library misbehaves, ask **which copy is loaded**, not which version is installed. `/proc/self/maps` answers in one line what a day of `pip list` diffs could not — installed and loaded are different questions, and only the second one mattered.
-  3. Let a failing check keep going. The ladder stopped at the first failure, so stages 2 and 3 never ran on a broken pod; "fp32 fails" looks like a TF32 problem, while "fp32 *and* bf16 fail through different entry points" names the cause immediately.
-  4. Never diagnose on a reused `--keep-alive` pod. Env vars set by an earlier launch persist (the launcher *merges* env, so unsetting a variable locally does not clear it), and `uv pip install` has already rewritten the venv. An early, wrong "host fault" verdict came from exactly that.
+  Both entries must be under `site-packages/nvidia/`. `pip list` is no help: it read identically on a working and a failing pod, because the packages were never the variable.
+* **Fix (a stopgap)**: `scripts/lib/platform.sh` prepends the wheel's own library directory to `LD_LIBRARY_PATH` on linux, asking the interpreter where its wheels live rather than hardcoding a python version. `scripts/train.sh` runs a 2x2 matmul as a pre-flight, so a regression costs ten seconds instead of surfacing twenty minutes and a 51 GB download later. This makes the right library win; it does not stop the image and the wheels from disagreeing in the first place. See `TODO.md` — a reproducible environment is the real fix.
+* **The signature to recognise**: allocation succeeds, the driver is fine, and *every* gemm fails — fp32 through `cublasSgemm` and bf16 through `cublasGemmEx` alike, TF32 on or off. A broken kernel path fails selectively; a broken library fails through every entry point. `src-train/cuda_smoke.py` stages exactly this ladder.
+* **Two habits worth keeping**:
+  1. Run the last-known-good commit *first* when something that used to work stops working. Here it excluded the whole branch in a single run.
+  2. Never diagnose on a reused `--keep-alive` pod. Env vars set by an earlier launch persist (the launcher *merges* env, so unsetting a variable locally does not clear it), and `uv pip install` has already rewritten the venv.
 
 # Evaluating
 

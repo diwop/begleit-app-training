@@ -369,18 +369,17 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
         ("ATTN_IMPLEMENTATION", "attn_implementation", str),
         ("GEMMA4_HYBRID_ATTN", "gemma4_hybrid_attn_impl", lambda v: v == "1"),
         ("EVAL_STRATEGY", "eval_strategy", str),
-        ("TF32", "tf32", lambda v: v == "1"),
     ):
         raw = os.environ.get(env_key, "")
         if raw:
             merged_cfg[cfg_key] = parse(raw)
             print(f"⚙️  {env_key}={raw} overrides {cfg_key} -> {merged_cfg[cfg_key]}", flush=True)
 
-    # EVAL_STRATEGY=no is the escape hatch while evaluation is broken: it gets a trained
-    # adapter out of a pod that would otherwise die at step 0. It has to drag
-    # load_best_model_at_end with it -- HF refuses the combination, since there would be no
-    # metric to choose a checkpoint by. Nothing is measured in this mode; the run produces
-    # weights and no evidence that they are any good.
+    # EVAL_STRATEGY=no trains without evaluating at all -- an escape hatch for getting an
+    # adapter out of a pod where evaluation misbehaves. It has to drag load_best_model_at_end
+    # with it: HF refuses the combination, since there would be no metric to choose a
+    # checkpoint by. Nothing is measured in this mode; the run produces weights and no
+    # evidence that they are any good.
     if str(merged_cfg.get("eval_strategy", "")).lower() in ("no", "none"):
         # test_datasets has to go, and it is the ONLY thing that actually works.
         # axolotl/core/builders/base.py:515 decides evaluation like this:
@@ -413,17 +412,9 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
 
     # DEEPSPEED_OFFLOAD=0 keeps parameters and optimizer state on the GPU.
     #
-    # The evaluation crash is not a bad matmul: with ROPE_DEBUG the reporter ran
-    # `ones(2,2) @ ones(2,2)` on the same device immediately beforehand and got the same
-    # CUBLAS_STATUS_INVALID_VALUE, so cuBLAS is unusable by then and the rotary embedding
-    # is a bystander. The same report showed only 24 MiB allocated on a card holding a 26B
-    # model -- the weights are not resident. With offload on, ZeRO-3 keeps them in CPU
-    # memory and gathers them through the DeepSpeed engine, and the engine's frame is
-    # absent from every eval traceback: HF's prediction_step calls the module directly.
-    #
-    # These settings were written for 2x L40S (2x44 GB), where a 52 GB bf16 model has to be
-    # offloaded. On a single 96 GB card it fits, so this is worth having as a switch
-    # regardless of whether it turns out to be the fix.
+    # The defaults were written for 2x L40S (2x44 GB), where a 52 GB bf16 model has to be
+    # offloaded. On a single 96 GB card it fits -- the 2026-07-31 run reserved 44 GiB of 96
+    # with offload on -- so this switch is worth having when the card has the room.
     if os.environ.get("DEEPSPEED_OFFLOAD") == "0":
         offload_param = offload_optimizer = False
         print("⚙️  DEEPSPEED_OFFLOAD=0: parameters and optimizer stay on the GPU", flush=True)

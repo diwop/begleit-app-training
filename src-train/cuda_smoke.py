@@ -1,23 +1,25 @@
 """Find the smallest thing that makes cuBLAS fail on this machine.
 
-Every training and evaluation run on 2026-07-31 died the same way:
+Written for the 2026-07-31 failure, where every run died at the first fp32 matmul of the
+first forward pass:
 
     RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE
                   when calling `cublasSgemm(handle, opa, opb, m, n, k, ...)`
 
-always at the first fp32 matmul of the first forward pass. A probe inserted just
-before it showed that `ones(2,2) @ ones(2,2)` fails there too, so the arguments were
-never the problem -- cuBLAS is simply unusable by that point. What is NOT known is
-whether it is unusable in a *fresh* process, or whether something in the stack breaks
-it on the way. This answers that, without the 51 GB base model or any data.
+That one turned out to be a mismatched cuBLAS pair -- the wheel's libcublas against the
+image's libcublasLt -- and `scripts/lib/platform.sh` now prevents it. The header below
+prints the loaded library paths, which is the quickest way to recognise a recurrence.
 
-Each stage runs in its own subprocess, so a poisoned CUDA context cannot leak into the
-next one and turn a single failure into a cascade of meaningless ones.
+The ladder still earns its place for anything else that makes cuBLAS unusable: it runs in
+seconds, needs neither the 51 GB base model nor any data, and each stage runs in its own
+subprocess so a poisoned CUDA context cannot cascade into the ones after it.
 
     python src-train/cuda_smoke.py            # run every stage, report the first failure
     python src-train/cuda_smoke.py --only 2   # one stage, full traceback
 
-Read the FIRST failing stage: it names the layer that breaks cuBLAS.
+Read the FIRST failing stage: it names the layer that breaks cuBLAS. Stages 1-3 together
+tell library from kernel path -- a broken library fails through every entry point, a
+broken kernel path fails selectively.
 """
 import argparse
 import subprocess

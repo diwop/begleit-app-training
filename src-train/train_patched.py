@@ -1,6 +1,5 @@
 # --- src/train_patched.py ---
 import os
-import sys
 import fire
 
 # Apple Silicon only, and it must precede `import axolotl`: Axolotl eagerly imports a
@@ -203,164 +202,44 @@ try:
 except Exception as e:
     print(f"⚠️ Warning: Failed to apply quantization validation monkeypatch: {e}")
 
-# --- ROPE_DEBUG=1: report the shapes entering the rotary embedding, once ---
-# Every evaluation so far has died at
-#     modeling_gemma4.py:1170  freqs = inv_freq_expanded.float() @ position_ids_expanded.float()
-#     RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE ... cublasSgemm
-# on four hardware/attention combinations. CUBLAS_STATUS_INVALID_VALUE is a host-side
-# argument check, so one of m/n/k is zero -- but which is a guess until someone prints it.
-# m comes from inv_freq, n from position_ids. Under ZeRO-3 an ungathered parameter has a
-# zero-element .data, which is the shape this would take if the eval forward is bypassing
-# the DeepSpeed engine (its frame is absent from the traceback).
-if os.environ.get("ROPE_DEBUG") == "1":
-    import importlib
-    import inspect
-
-    _rope_seen = []
-
-    def _make_rope_reporter(label, original):
-        def reporting_forward(self, x, position_ids, *args, **kwargs):
-            if not _rope_seen:
-                _rope_seen.append(True)
-                parts = [f"class={label}", f"extra_args={args}"]
-                for name, tensor in (("x", x), ("position_ids", position_ids)):
-                    try:
-                        parts.append(f"{name} shape={tuple(tensor.shape)} "
-                                     f"numel={tensor.numel()} dtype={tensor.dtype} "
-                                     f"dev={tensor.device}")
-                    except Exception as exc:  # noqa: BLE001 -- a report must not add a failure
-                        parts.append(f"{name} UNREADABLE ({exc})")
-                for name, buf in self.named_buffers(recurse=False):
-                    parts.append(f"BUF {name} shape={tuple(buf.shape)} "
-                                 f"numel={buf.numel()} dev={buf.device}")
-                for name, param in self.named_parameters(recurse=False):
-                    parts.append(f"PARAM {name} shape={tuple(param.shape)} "
-                                 f"numel={param.numel()} "
-                                 f"ds_status={getattr(param, 'ds_status', 'n/a')} "
-                                 f"ds_shape={getattr(param, 'ds_shape', 'n/a')}")
-
-                # The first report showed m=256, n=1600, k=1 on the right device -- valid
-                # arguments that cuBLAS rejected anyway. So the question is no longer "what
-                # is wrong with these tensors" but "is cuBLAS working at all here". A 2x2
-                # matmul on the same device answers that: if it fails too, the context is
-                # already broken and the rotary embedding is an innocent bystander.
-                import torch as _torch
-
-                parts.append(f"current_device=cuda:{_torch.cuda.current_device()}")
-                parts.append(f"x.stride={x.stride()} pos.stride={position_ids.stride()}")
-                parts.append(f"alloc={_torch.cuda.memory_allocated(x.device) >> 20}MiB "
-                             f"reserved={_torch.cuda.memory_reserved(x.device) >> 20}MiB")
-                # The failing call is cublasSgemm -- SINGLE precision. Everything else in
-                # this model is bf16, and the rotary embedding is the first thing to force
-                # fp32 (maybe_autocast(enabled=False) plus .float()). TF32 is a mode that
-                # applies to exactly that: fp32 matmuls on tensor cores. config/base.yml
-                # sets tf32: true, and the image is a *mutable* `main` tag on CUDA 13.0, so
-                # a regression there would show up here and nowhere else.
-                #
-                # tf32 OFF is tried FIRST, while the CUDA context is still clean: a failure
-                # can leave it in a state where anything afterwards fails regardless.
-                def _try_fp32_matmul():
-                    probe = _torch.ones(2, 2, device=x.device, dtype=_torch.float32)
-                    return (probe @ probe).sum().item()
-
-                _tf32_was = _torch.backends.cuda.matmul.allow_tf32
-                parts.append(f"tf32_allowed={_tf32_was} "
-                             f"precision={_torch.get_float32_matmul_precision()}")
-                for _label, _setting in (("tf32_OFF", False), ("tf32_AS_CONFIGURED", _tf32_was)):
-                    _torch.backends.cuda.matmul.allow_tf32 = _setting
-                    try:
-                        _try_fp32_matmul()
-                        parts.append(f"FP32_MATMUL[{_label}]=ok")
-                    except Exception as exc:  # noqa: BLE001
-                        parts.append(f"FP32_MATMUL[{_label}]=FAILED "
-                                     f"{type(exc).__name__}: {str(exc)[:90]}")
-                _torch.backends.cuda.matmul.allow_tf32 = _tf32_was
-                print("🔬 ROPE FIRST CALL || " + " || ".join(parts), flush=True)
-            return original(self, x, position_ids, *args, **kwargs)
-        return reporting_forward
-
-    # Discovered, not guessed. `Gemma4RotaryEmbedding` was a guess and the class is called
-    # something else, so the reporter silently did nothing for a whole pod run. Scan the
-    # module and print what is actually there, so a miss is visible rather than quiet.
-    for _mod_name in ("transformers.models.gemma4.modeling_gemma4",
-                      "transformers.models.gemma4_unified.modeling_gemma4_unified"):
-        try:
-            _mod = importlib.import_module(_mod_name)
-        except Exception as e:  # noqa: BLE001
-            print(f"ℹ️  ROPE_DEBUG: {_mod_name} not importable ({e})")
-            continue
-        _classes = [(n, o) for n, o in vars(_mod).items()
-                    if inspect.isclass(o) and "rotary" in n.lower() and hasattr(o, "forward")]
-        if not _classes:
-            print(f"⚠️  ROPE_DEBUG: no *Rotary* class in {_mod_name}. Classes present: "
-                  f"{sorted(n for n, o in vars(_mod).items() if inspect.isclass(o))}")
-            continue
-        for _name, _cls in _classes:
-            _cls.forward = _make_rope_reporter(f"{_mod_name}.{_name}", _cls.forward)
-            print(f"🔬 MONKEYPATCH: ROPE_DEBUG reporting on {_mod_name}.{_name}")
-
 # --- Route evaluation through the DeepSpeed engine (EVAL_VIA_ENGINE=0 disables) ---
-# Under ZeRO-3 every evaluation dies in cuBLAS, and the probe showed the rotary embedding
-# is a bystander: ones(2,2) @ ones(2,2) fails on the same device one line earlier. What
-# every traceback has in common is a MISSING frame -- no deepspeed/runtime/engine.py
-# between compute_loss and the model. transformers 5.14.1 explains why:
+# Under ZeRO-3, training-time evaluation is handed the raw PeftModel rather than the
+# engine that owns the parameter gathering. Two lines in Trainer produce that:
 #
 #   Trainer._wrap_model:      if not training: return model      # eval gets it unwrapped
 #   Trainer.evaluation_loop:  if len(self.accelerator._models) == 0 and model is self.model:
 #                                 model = self.accelerator.prepare(model)
 #
-# During training-time evaluation the accelerator already holds the training model, so
-# that guard is False and the prepare never runs. prediction_step is therefore handed the
-# raw PeftModel while the DeepSpeed engine, which owns the ZeRO-3 parameter gathering,
-# sits unused in self.model_wrapped. Training works because it calls the engine.
+# The accelerator already holds the training model, so that guard is False and the prepare
+# never runs. The DeepSpeed engine then sits unused in self.model_wrapped while
+# prediction_step calls the module directly; training works because it calls the engine.
 #
 # Substituting the engine costs nothing when DeepSpeed is off: the condition is false and
 # the original runs untouched.
+#
+# NOT YET PROVEN LOAD-BEARING. The 2026-07-31 run shows the substitution firing -- eval is
+# handed a PeftModelForCausalLM whose first parameter is numel=0 with
+# ds_status=NOT_AVAILABLE, i.e. sharded and ungathered, while model_wrapped is a
+# DeepSpeedEngine -- so the mechanism above is real. What has never been measured is
+# whether evaluation also works WITHOUT it, because every attempt to find out was masked by
+# the cuBLAS fault (failures-and-fixes.md, Training Iteration 15). Run once with
+# EVAL_VIA_ENGINE=0: if evaluation succeeds and eval_loss matches, delete this patch.
 if os.environ.get("EVAL_VIA_ENGINE", "1") == "1":
     try:
         from transformers import Trainer as _HFTrainer
 
         _orig_prediction_step = _HFTrainer.prediction_step
-        _engine_note = []
+        _routed = []
 
         def _prediction_step_via_engine(self, model, inputs, *args, **kwargs):
             engine = getattr(self, "model_wrapped", None)
-
-            # Dump the whole state once, unconditionally. The substitution above silently
-            # did nothing on the first attempt because its condition was false, and one
-            # boolean per pod run is too slow a way to find out which one.
-            if not _engine_note:
-                _engine_note.append(True)
-                import torch as _t
-
-                bits = [
-                    f"is_deepspeed_enabled={getattr(self, 'is_deepspeed_enabled', 'MISSING')}",
-                    f"model={type(model).__name__}",
-                    f"model_wrapped={type(engine).__name__ if engine is not None else None}",
-                    f"same_object={engine is model}",
-                    f"self.deepspeed={type(getattr(self, 'deepspeed', None)).__name__}",
-                ]
-                try:
-                    plugin = self.accelerator.state.deepspeed_plugin
-                    bits.append(f"ds_plugin={plugin is not None} "
-                                f"stage={getattr(plugin, 'zero_stage', '?') if plugin else '-'}")
-                except Exception as exc:  # noqa: BLE001
-                    bits.append(f"ds_plugin=ERR {type(exc).__name__}")
-                bits.append(f"accelerator_models={len(getattr(self.accelerator, '_models', []))}")
-                try:
-                    param = next(iter(model.parameters()))
-                    bits.append(f"first_param numel={param.numel()} "
-                                f"shape={tuple(param.shape)} dev={param.device} "
-                                f"ds_status={getattr(param, 'ds_status', 'n/a')}")
-                except Exception as exc:  # noqa: BLE001
-                    bits.append(f"param_probe=ERR {type(exc).__name__}")
-                bits.append(f"cuda_alloc={_t.cuda.memory_allocated() >> 20}MiB")
-                print("🔬 EVAL STATE || " + " || ".join(bits), flush=True)
-
             if getattr(self, "is_deepspeed_enabled", False) and engine is not None \
                     and engine is not model:
-                print(f"🔧 eval: routing through {type(engine).__name__} instead of "
-                      f"{type(model).__name__}", flush=True)
+                # Once per run, not once per batch: this fires for every evaluation step.
+                if not _routed:
+                    _routed.append(True)
+                    print(f"🔧 eval: routing through {type(engine).__name__} instead of "
+                          f"{type(model).__name__}", flush=True)
                 model = engine
             return _orig_prediction_step(self, model, inputs, *args, **kwargs)
 

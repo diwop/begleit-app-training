@@ -24,11 +24,44 @@ Inferenzlauf mit
 ## AKtueller Stand
 
 - läuft lokal
-- Fehler in RunPod beim erste predict-Schritt des Trainings. Runs:
-   - Gegentest, ob reines Training noch funzt: `EVAL_STRATEGY=no DEEPSPEED_OFFLOAD=0 bash scripts/start_runpod.sh train --keep-alive`
-   - Eval-Test mit aktivierter Engine+ DeepSpeed: `DEEPSPEED_OFFLOAD=0 ROPE_DEBUG=1 bash scripts/start_runpod.sh train --keep-alive`
+- ~~Fehler in RunPod beim ersten predict-Schritt des Trainings~~ — **gelöst am 2026-07-31.**
+  Zwei verschiedene cuBLAS-Builds im selben Prozess: `libcublas` aus dem pip-Wheel,
+  `libcublasLt` aus dem System-CUDA des Images. `scripts/lib/platform.sh` stellt jetzt die
+  Wheel-Bibliotheken im `LD_LIBRARY_PATH` voran. Details in `failures-and-fixes.md`,
+  Training-Iteration 15. Das ist ein Notnagel, kein Fix — siehe Punkt 1.
+- Verifiziert im Lauf vom 2026-07-31 23:02 UTC: 533 Trainings- und 75 Validierungsbeispiele
+  geladen, 26B-Modell mit LoRA (37,2 M trainierbare Parameter, 0,14 %), erste Evaluation
+  vollständig durchgelaufen — `eval_loss 3.5`, `eval_ppl 33.11`, 44 GiB von 96 GiB belegt.
+  Der Lauf wurde danach von Hand beendet; ein vollständiger Lauf steht noch aus.
 
 # Offene Aufgaben
+
+## 1. Reproduzierbare Trainingsumgebung  ← nächster Schritt
+
+`scripts/lib/platform.sh` sortiert heute den `LD_LIBRARY_PATH` so um, dass die
+CUDA-Bibliotheken aus den torch-Wheels vor denen des Images gefunden werden. Das behebt das
+Symptom von Iteration 15 zuverlässig, aber **die Ursache bleibt**: das Image bringt eine
+vollständige CUDA-Installation unter `/usr/local/cuda-13.0` mit, die Wheels bringen eine
+zweite unter `site-packages/nvidia/`, beide in unterschiedlichen Versionen, und nichts
+verhindert, dass sie im selben Prozess gemischt werden. Ein Pfad-Patch ist die falsche
+Abstraktionsebene — er gewinnt ein Wettrennen, statt es abzuschaffen.
+
+Gewollt ist eine Umgebung, die *garantiert* keine inkompatiblen Versionen still
+nebeneinander installiert. Zwei Richtungen, beide noch zu bewerten:
+
+1. **Eigene Umgebung mit `pixi`.** Conda-forge liefert CUDA als echte Pakete mit
+   Abhängigkeiten, statt als zwei unabhängige Kopien; der Solver kann Konflikte dann
+   überhaupt sehen. Preis: wir bauen den kompletten Stack (torch, DeepSpeed,
+   FlashAttention, axolotl) selbst und geben das fertige Axolotl-Image auf.
+2. **Auf einem bekannten Basis-Image aufsetzen, aber mit harten Garantien.** Das Image
+   bleibt die Wahrheit für torch und CUDA; unsere Installation darf dann nichts
+   torch-Nahes mehr anfassen. Offen ist, womit sich das *erzwingen* lässt — Kandidaten:
+   `uv pip install --no-deps` für die eigenen Pakete, `[tool.uv] constraint-dependencies`
+   gegen die im Image vorhandenen Versionen, oder ein Check nach der Installation, der
+   doppelte CUDA-Bibliotheken findet und laut abbricht.
+
+Entscheidungsgrundlage sollte sein, welche Variante den Fehler *unmöglich* macht, nicht
+welche ihn heute vermeidet. Verwandt: der Lockfile-Punkt unter „Weitere offene Punkte".
 
 ## 2. FP8-Basismodell mit Adapter testen
 
@@ -139,8 +172,10 @@ RunPod-Adapter nachsehen, und bei Bedarf neu trainieren.
   3. Getrennte Lockfiles pro Plattform (`uv lock --python-platform`), falls ein universeller
      Lock unerreichbar bleibt.
 
-  **Der RunPod-Pfad ist davon nicht betroffen** — dort installiert `setup.sh` nur
-  `uv pip install src-train/` auf das fertige Axolotl-Image, ohne axolotl selbst.
+  **Vom antlr-Konflikt ist der RunPod-Pfad nicht betroffen** — dort installiert `setup.sh`
+  nur `uv pip install src-train/` auf das fertige Axolotl-Image, ohne axolotl selbst.
+  Reproduzierbar ist er deshalb aber nicht: Iteration 15 hat gezeigt, dass genau dieser
+  Pfad eine zweite CUDA-Installation neben die des Images stellt. Punkt 1 behandelt das.
 
 - **Frühe Fehler im Container sind in S3 unsichtbar.** `scripts/train.sh` startet den
   Live-Sync (`scripts/lib/s3_sync.sh`) erst kurz vor dem Training, und `finish.sh` — das den

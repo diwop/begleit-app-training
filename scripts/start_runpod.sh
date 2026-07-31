@@ -238,19 +238,19 @@ build_env_json() {
     done
     printf '%s' "$json"
 }
-# The last four are debugging knobs, unset in a normal run and simply not sent then.
+# The last few are debugging knobs, unset in a normal run and simply not sent then.
 # CUDA_LAUNCH_BLOCKING earns its place: CUDA reports errors asynchronously, so a fault in
 # one kernel surfaces at the next synchronising call and the traceback points somewhere
-# innocent. The 2026-07-31 crash blamed a 3-element fp32 matmul inside Gemma 4's rotary
-# embedding, which is a symptom, not a cause. Setting it to 1 makes every launch
-# synchronous -- much slower, and the only way to see where the fault actually is.
+# innocent -- on 2026-07-31 at a small fp32 matmul inside Gemma 4's rotary embedding, which
+# was a symptom and not the cause. Setting it to 1 makes every launch synchronous: much
+# slower, and the only way to see where the fault actually is.
 # VALIDATION_METRICS_* tune src-train/validation_metrics.py without editing a config.
 ENV_JSON="$(build_env_json MODE BRANCH REPO_URL PUBLIC_KEY RUNPOD_API_KEY HF_TOKEN \
     S3_BUCKET AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
     KEEP_ALIVE TRAIN_CONFIG TP_SIZE SMOKE_BASE SMOKE_ADAPTER_S3 SMOKE_EAGER \
     CUDA_LAUNCH_BLOCKING TORCH_USE_CUDA_DSA VALIDATION_METRICS_OFF \
     VALIDATION_METRICS_SAMPLES VALIDATION_METRICS_MAX_TOKENS \
-    ATTN_IMPLEMENTATION GEMMA4_HYBRID_ATTN EVAL_STRATEGY ROPE_DEBUG DEEPSPEED_OFFLOAD TF32 EVAL_VIA_ENGINE)"
+    ATTN_IMPLEMENTATION GEMMA4_HYBRID_ATTN EVAL_STRATEGY DEEPSPEED_OFFLOAD EVAL_VIA_ENGINE)"
 
 echo
 if [ "$ATTACH" = "1" ]; then
