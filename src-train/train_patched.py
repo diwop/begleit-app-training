@@ -299,6 +299,46 @@ if os.environ.get("ROPE_DEBUG") == "1":
             _cls.forward = _make_rope_reporter(f"{_mod_name}.{_name}", _cls.forward)
             print(f"🔬 MONKEYPATCH: ROPE_DEBUG reporting on {_mod_name}.{_name}")
 
+# --- Route evaluation through the DeepSpeed engine (EVAL_VIA_ENGINE=0 disables) ---
+# Under ZeRO-3 every evaluation dies in cuBLAS, and the probe showed the rotary embedding
+# is a bystander: ones(2,2) @ ones(2,2) fails on the same device one line earlier. What
+# every traceback has in common is a MISSING frame -- no deepspeed/runtime/engine.py
+# between compute_loss and the model. transformers 5.14.1 explains why:
+#
+#   Trainer._wrap_model:      if not training: return model      # eval gets it unwrapped
+#   Trainer.evaluation_loop:  if len(self.accelerator._models) == 0 and model is self.model:
+#                                 model = self.accelerator.prepare(model)
+#
+# During training-time evaluation the accelerator already holds the training model, so
+# that guard is False and the prepare never runs. prediction_step is therefore handed the
+# raw PeftModel while the DeepSpeed engine, which owns the ZeRO-3 parameter gathering,
+# sits unused in self.model_wrapped. Training works because it calls the engine.
+#
+# Substituting the engine costs nothing when DeepSpeed is off: the condition is false and
+# the original runs untouched.
+if os.environ.get("EVAL_VIA_ENGINE", "1") == "1":
+    try:
+        from transformers import Trainer as _HFTrainer
+
+        _orig_prediction_step = _HFTrainer.prediction_step
+        _engine_note = []
+
+        def _prediction_step_via_engine(self, model, inputs, *args, **kwargs):
+            engine = getattr(self, "model_wrapped", None)
+            if getattr(self, "is_deepspeed_enabled", False) and engine is not None \
+                    and engine is not model:
+                if not _engine_note:
+                    _engine_note.append(True)
+                    print(f"🔧 eval: routing through {type(engine).__name__} instead of "
+                          f"{type(model).__name__}", flush=True)
+                model = engine
+            return _orig_prediction_step(self, model, inputs, *args, **kwargs)
+
+        _HFTrainer.prediction_step = _prediction_step_via_engine
+        print("🔧 MONKEYPATCH: evaluation will use the DeepSpeed engine, not the raw module")
+    except Exception as e:
+        print(f"⚠️ Warning: could not route evaluation through the engine: {e}")
+
 original_train = axolotl.train.train
 
 def patched_train(cfg, *args, **kwargs):
