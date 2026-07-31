@@ -298,6 +298,25 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
     if "attn_implementation" not in merged_cfg and accelerator == "cuda":
         merged_cfg["attn_implementation"] = "flash_attention_2"
 
+    # Attention overrides from the environment, so bisecting a failure on a GPU pod costs a
+    # relaunch rather than a commit, a push and a wait.
+    #
+    # THESE TWO GO TOGETHER. Gemma 4's five global layers have head_dim 512 and
+    # FlashAttention-2 refuses anything above 256 (failures-and-fixes.md, Training
+    # Iteration 1). `gemma4_hybrid_attn_impl` exists to route exactly those five to SDPA
+    # while the other 25 keep FA2, which is what made 16k context fit (Iteration 3).
+    # Turning it off therefore requires attn_implementation=sdpa everywhere -- and buys
+    # back the memory problem Iteration 3 solved. Setting one without the other just
+    # reproduces a failure we already understand.
+    for env_key, cfg_key, parse in (
+        ("ATTN_IMPLEMENTATION", "attn_implementation", str),
+        ("GEMMA4_HYBRID_ATTN", "gemma4_hybrid_attn_impl", lambda v: v == "1"),
+    ):
+        raw = os.environ.get(env_key, "")
+        if raw:
+            merged_cfg[cfg_key] = parse(raw)
+            print(f"⚙️  {env_key}={raw} overrides {cfg_key} -> {merged_cfg[cfg_key]}", flush=True)
+
     # Extract DeepSpeed tuning settings from Axolotl YAML if configured
     cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
     offload_optimizer = merged_cfg.get("deepspeed_offload_optimizer", False)
