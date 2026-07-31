@@ -28,10 +28,17 @@ Der Datenteil ist fertig, der Lauf darauf nicht. Was jetzt steht:
 
 - **780 Paare** in `data/raw`, als *ein* DVC-Verzeichnis (vorher 16 Einzel-Pointer).
   Import und Namens-Normalisierung: `src-train/import_raw.py`.
-- **DVC-Remote** ist `s3://diwop-analysis/dvc`. ⚠️ Das ist ein **anderer Bucket** als
-  `S3_BUCKET` (`diwop-leichte-sprache`). Ob die AWS-Credentials im RunPod-Template auch
-  `diwop-analysis` lesen dürfen, ist **ungeprüft** — wenn nicht, schlägt `dvc pull` im
-  Container fehl. Das ist die wahrscheinlichste Stolperstelle beim ersten Lauf.
+- **DVC-Remote** ist `s3://diwop-leichte-sprache/dvc` — derselbe Bucket wie `S3_BUCKET`.
+  Zuerst lag er neben dem Quellkorpus unter `s3://diwop-analysis/dvc`; der RunPod-Lauf am
+  2026-07-31 ist genau daran gescheitert:
+
+      ERROR: failed to connect to s3 (diwop-analysis/dvc/files/md5)
+             Forbidden: An error occurred (403) when calling the HeadObject operation
+
+  Die RunPod-Rolle darf `diwop-analysis` nicht lesen. Zurückverlegen nur mit einer
+  entsprechenden IAM-Berechtigung (`s3:GetObject` + `s3:ListBucket` auf dem Prefix).
+  Persönliche SSO-Credentials in die Pod-Umgebung zu exportieren ist **kein** Ausweg:
+  `scripts/start_runpod.sh` kopiert Secrets bewusst nicht in die Pod-Env (Zeilen 108-112).
 - **Splits** 70/10/20 → `data/train/dataset.jsonl` (533), `data/train/validation.jsonl`
   (75), `data/eval/holdout.jsonl` (167). Die Zuordnung ist `sha256(salt:id)`, kein
   Shuffle — neue Dokumente verschieben kein einziges altes über die Holdout-Grenze.
@@ -241,6 +248,16 @@ RunPod-Adapter nachsehen, und bei Bedarf neu trainieren.
 
   **Der RunPod-Pfad ist davon nicht betroffen** — dort installiert `setup.sh` nur
   `uv pip install src-train/` auf das fertige Axolotl-Image, ohne axolotl selbst.
+
+- **Frühe Fehler im Container sind in S3 unsichtbar.** `scripts/train.sh` startet den
+  Live-Sync (`scripts/lib/s3_sync.sh`) erst kurz vor dem Training, und `finish.sh` — das den
+  Log nach S3 hochlädt — läuft nur, wenn das Skript bis zum Ende kommt. Alles davor (DVC-Pull,
+  Holdout-Guard, `setup.sh`) stirbt wegen `set -e` lautlos: der Bucket bleibt leer, und der
+  einzige Hinweis steht im RunPod-Log des Pods. Genau so lief der 403 am 2026-07-31.
+
+  Sauber wäre, die Ausgabe des ganzen Skripts von der ersten Zeile an in `$LOG_FILE` zu
+  spiegeln und den Log auch im Fehlerfall (`trap ... ERR`) hochzuladen. Nicht während eines
+  laufenden Incidents umgebaut.
 
 - **`src-eval/evaluation.py`** ist verwaist: die alte Readability-Metrics-Pipeline, wird von
   keinem Skript mehr aufgerufen, importiert vLLM auf Modulebene und hängt an `/app`-Pfaden.

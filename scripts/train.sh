@@ -22,8 +22,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 TRAIN_DATA=(data/train/dataset.jsonl data/train/validation.jsonl data/split_manifest.json)
 if [ ! -f data/train/dataset.jsonl ] || [ ! -f data/train/validation.jsonl ]; then
     echo "==> training data missing, pulling via DVC"
-    # The default remote is s3://diwop-analysis/dvc, so this needs AWS credentials that can
-    # read that bucket -- not only the S3_BUCKET the adapters are published to.
+    # The default remote is s3://diwop-leichte-sprache/dvc -- the same bucket as
+    # S3_BUCKET, so the pod's role needs no grant beyond the one it already has.
     "$(dirname "$PY_TRAIN")/dvc" pull "${TRAIN_DATA[@]}" 2>/dev/null || \
         "$PY_TRAIN" -m dvc pull "${TRAIN_DATA[@]}"
 fi

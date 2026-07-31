@@ -21,9 +21,10 @@ By default, the launch script runs in `MODE=eval`.
   `data/eval/holdout.jsonl`, so it aborts if that file turns up in the container anyway.
 * `scripts/eval.sh` pulls the holdout, the manifest, and the training set (the latter only
   so `src-eval/smoke_adapter.py` has its highest-signal case).
-* The DVC remote is `s3://diwop-analysis/dvc`. **This is a different bucket from
-  `S3_BUCKET`** (`diwop-leichte-sprache`), where adapters and logs go. The pod's AWS
-  credentials must be able to read both, or the pull fails.
+* The DVC remote is `s3://diwop-leichte-sprache/dvc` — the same bucket as `S3_BUCKET`, so
+  the pod's role needs no grant beyond the one it already has for adapters and logs. It
+  briefly lived next to the source corpus in `s3://diwop-analysis/dvc`, which the RunPod
+  role cannot read; that run died with a 403 on `HeadObject`.
 * Training writes `run_manifest.json` next to the adapter: base model, config hash, and the
   exact ids in each split. That file is what lets an eval run on a different pod claim its
   score came from documents the adapter never saw.

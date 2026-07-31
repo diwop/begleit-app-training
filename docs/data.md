@@ -1,7 +1,7 @@
 # Raw and Training Data
 
 The repository holds pointers; DVC holds the files. The default remote is
-`s3://diwop-analysis/dvc`.
+`s3://diwop-leichte-sprache/dvc` — the same bucket as `S3_BUCKET`.
 
 ## What is in there
 
@@ -90,9 +90,20 @@ dvc repro                # rebuild the splits after changing data/raw or the pro
 dvc push                 # publish
 ```
 
-`dvc pull` needs AWS credentials that can read **`s3://diwop-analysis`**. That is a
-different bucket from `S3_BUCKET` (`diwop-leichte-sprache`), which is where adapters and
-logs are published — a pod whose credentials only cover the latter will fail the pull.
+`dvc pull` needs credentials for `s3://diwop-leichte-sprache`, the same bucket the pipeline
+already publishes adapters and logs to — so the RunPod role needs nothing extra.
+
+The cache deliberately does **not** sit next to the source corpus in `s3://diwop-analysis`,
+even though that would keep the data in one place. The RunPod role cannot read that bucket,
+and a training run died on it:
+
+    ERROR: failed to connect to s3 (diwop-analysis/dvc/files/md5)
+           Forbidden: An error occurred (403) when calling the HeadObject operation
+
+Moving it back needs `s3:GetObject` and `s3:ListBucket` granted to that role on the prefix.
+Exporting personal SSO credentials into the pod is not an alternative:
+`scripts/start_runpod.sh` keeps secrets in the RunPod template on purpose and never copies
+them into the pod's own environment.
 
 Adding texts: drop them into `data/raw` under the canonical names, then `dvc add data/raw`,
 `dvc repro`, `dvc push`. Github Actions blocks merging if the data and the dataset are out

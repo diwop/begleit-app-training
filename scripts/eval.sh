@@ -18,8 +18,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 EVAL_DATA=(data/eval/holdout.jsonl data/split_manifest.json data/train/dataset.jsonl)
 if [ ! -f data/eval/holdout.jsonl ] || [ ! -f data/train/dataset.jsonl ]; then
     echo "==> eval data missing, pulling via DVC"
-    # Default remote is s3://diwop-analysis/dvc, so this needs AWS credentials for that
-    # bucket. src-eval declares dvc[s3], so this should succeed -- but it stays non-fatal
+    # Default remote is s3://diwop-leichte-sprache/dvc, the same bucket as S3_BUCKET.
+    # src-eval declares dvc[s3], so this should succeed -- but it stays non-fatal
     # on purpose: smoke_adapter.py already drops the training-sample case when the dataset
     # is absent and still exercises the adapter, so a failed pull is not worth losing a
     # started pod over. It cost exactly that once.

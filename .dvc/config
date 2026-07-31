@@ -1,10 +1,16 @@
 [core]
     autostage = true
     remote = s3
-# The corpus itself lives at s3://diwop-analysis/training-data/ under the inconsistent
-# names src-train/import_raw.py normalises; this prefix holds the DVC-hashed copies.
+# The same bucket as S3_BUCKET, deliberately. The source corpus lives elsewhere --
+# s3://diwop-analysis/training-data/, under the inconsistent names src-train/import_raw.py
+# normalises -- and putting the DVC cache next to it was the obvious choice, but the RunPod
+# role cannot read that bucket:
+#     ERROR: failed to connect to s3 (diwop-analysis/dvc/files/md5)
+#            Forbidden: An error occurred (403) when calling the HeadObject operation
+# The pod already reads and writes this bucket for adapters and logs, so `dvc pull` in the
+# container needs no new IAM grant. Do not move it back without one.
 ['remote "s3"']
-    url = s3://diwop-analysis/dvc
+    url = s3://diwop-leichte-sprache/dvc
 # Kept for offline work: `dvc pull -r local_test_remote` needs no AWS credentials, but it
 # only holds the eight-document corpus this project started with.
 ['remote "local_test_remote"']
