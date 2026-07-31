@@ -213,33 +213,54 @@ except Exception as e:
 # zero-element .data, which is the shape this would take if the eval forward is bypassing
 # the DeepSpeed engine (its frame is absent from the traceback).
 if os.environ.get("ROPE_DEBUG") == "1":
-    try:
-        from transformers.models.gemma4 import modeling_gemma4
+    import importlib
+    import inspect
 
-        _rope_cls = modeling_gemma4.Gemma4RotaryEmbedding
-        _rope_orig_forward = _rope_cls.forward
-        _rope_seen = []
+    _rope_seen = []
 
-        def _rope_reporting_forward(self, x, position_ids, *args, **kwargs):
+    def _make_rope_reporter(label, original):
+        def reporting_forward(self, x, position_ids, *args, **kwargs):
             if not _rope_seen:
                 _rope_seen.append(True)
-                parts = [f"args={args}"]
+                parts = [f"class={label}", f"extra_args={args}"]
                 for name, tensor in (("x", x), ("position_ids", position_ids)):
-                    parts.append(f"{name} shape={tuple(tensor.shape)} numel={tensor.numel()} "
-                                 f"dtype={tensor.dtype} dev={tensor.device}")
+                    try:
+                        parts.append(f"{name} shape={tuple(tensor.shape)} "
+                                     f"numel={tensor.numel()} dtype={tensor.dtype} "
+                                     f"dev={tensor.device}")
+                    except Exception as exc:  # noqa: BLE001 -- a report must not add a failure
+                        parts.append(f"{name} UNREADABLE ({exc})")
                 for name, buf in self.named_buffers(recurse=False):
-                    parts.append(f"BUF {name} shape={tuple(buf.shape)} numel={buf.numel()} "
-                                 f"dev={buf.device}")
+                    parts.append(f"BUF {name} shape={tuple(buf.shape)} "
+                                 f"numel={buf.numel()} dev={buf.device}")
                 for name, param in self.named_parameters(recurse=False):
                     parts.append(f"PARAM {name} shape={tuple(param.shape)} "
-                                 f"numel={param.numel()} ds_status={getattr(param, 'ds_status', 'n/a')}")
+                                 f"numel={param.numel()} "
+                                 f"ds_status={getattr(param, 'ds_status', 'n/a')} "
+                                 f"ds_shape={getattr(param, 'ds_shape', 'n/a')}")
                 print("🔬 ROPE FIRST CALL || " + " || ".join(parts), flush=True)
-            return _rope_orig_forward(self, x, position_ids, *args, **kwargs)
+            return original(self, x, position_ids, *args, **kwargs)
+        return reporting_forward
 
-        _rope_cls.forward = _rope_reporting_forward
-        print("🔬 MONKEYPATCH: ROPE_DEBUG=1, rotary embedding reports shapes on first call")
-    except Exception as e:
-        print(f"⚠️ Warning: could not install the rotary-embedding reporter: {e}")
+    # Discovered, not guessed. `Gemma4RotaryEmbedding` was a guess and the class is called
+    # something else, so the reporter silently did nothing for a whole pod run. Scan the
+    # module and print what is actually there, so a miss is visible rather than quiet.
+    for _mod_name in ("transformers.models.gemma4.modeling_gemma4",
+                      "transformers.models.gemma4_unified.modeling_gemma4_unified"):
+        try:
+            _mod = importlib.import_module(_mod_name)
+        except Exception as e:  # noqa: BLE001
+            print(f"ℹ️  ROPE_DEBUG: {_mod_name} not importable ({e})")
+            continue
+        _classes = [(n, o) for n, o in vars(_mod).items()
+                    if inspect.isclass(o) and "rotary" in n.lower() and hasattr(o, "forward")]
+        if not _classes:
+            print(f"⚠️  ROPE_DEBUG: no *Rotary* class in {_mod_name}. Classes present: "
+                  f"{sorted(n for n, o in vars(_mod).items() if inspect.isclass(o))}")
+            continue
+        for _name, _cls in _classes:
+            _cls.forward = _make_rope_reporter(f"{_mod_name}.{_name}", _cls.forward)
+            print(f"🔬 MONKEYPATCH: ROPE_DEBUG reporting on {_mod_name}.{_name}")
 
 original_train = axolotl.train.train
 
