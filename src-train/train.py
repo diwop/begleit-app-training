@@ -325,9 +325,15 @@ def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda")
     # metric to choose a checkpoint by. Nothing is measured in this mode; the run produces
     # weights and no evidence that they are any good.
     if str(merged_cfg.get("eval_strategy", "")).lower() in ("no", "none"):
+        # eval_steps has to go with it -- axolotl's schema rejects the pair outright:
+        #   "eval_strategy and eval_steps mismatch. Please set eval_strategy to 'steps'
+        #    or remove eval_steps."
+        # save_strategy/save_steps stay: checkpoints are what eval_metrics.json and the
+        # published adapter are read from, and they are unrelated to evaluating.
+        merged_cfg.pop("eval_steps", None)
         merged_cfg["load_best_model_at_end"] = False
-        print("⚠️  eval_strategy=no: load_best_model_at_end forced off, and this run "
-              "produces NO validation numbers at all.", flush=True)
+        print("⚠️  eval_strategy=no: eval_steps dropped, load_best_model_at_end forced "
+              "off, and this run produces NO validation numbers at all.", flush=True)
 
     # Extract DeepSpeed tuning settings from Axolotl YAML if configured
     cpu_checkpointing = merged_cfg.get("deepspeed_cpu_checkpointing", False)
