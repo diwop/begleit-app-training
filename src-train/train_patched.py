@@ -238,6 +238,25 @@ if os.environ.get("ROPE_DEBUG") == "1":
                                  f"numel={param.numel()} "
                                  f"ds_status={getattr(param, 'ds_status', 'n/a')} "
                                  f"ds_shape={getattr(param, 'ds_shape', 'n/a')}")
+
+                # The first report showed m=256, n=1600, k=1 on the right device -- valid
+                # arguments that cuBLAS rejected anyway. So the question is no longer "what
+                # is wrong with these tensors" but "is cuBLAS working at all here". A 2x2
+                # matmul on the same device answers that: if it fails too, the context is
+                # already broken and the rotary embedding is an innocent bystander.
+                import torch as _torch
+
+                parts.append(f"current_device=cuda:{_torch.cuda.current_device()}")
+                parts.append(f"x.stride={x.stride()} pos.stride={position_ids.stride()}")
+                parts.append(f"alloc={_torch.cuda.memory_allocated(x.device) >> 20}MiB "
+                             f"reserved={_torch.cuda.memory_reserved(x.device) >> 20}MiB")
+                try:
+                    _probe = _torch.ones(2, 2, device=x.device, dtype=_torch.float32)
+                    _ = (_probe @ _probe).sum().item()
+                    parts.append("TRIVIAL_FP32_MATMUL=ok")
+                except Exception as exc:  # noqa: BLE001
+                    parts.append(f"TRIVIAL_FP32_MATMUL=FAILED {type(exc).__name__}: "
+                                 f"{str(exc)[:120]}")
                 print("🔬 ROPE FIRST CALL || " + " || ".join(parts), flush=True)
             return original(self, x, position_ids, *args, **kwargs)
         return reporting_forward
