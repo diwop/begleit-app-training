@@ -79,16 +79,28 @@ two half-rows per evaluation, and anything plotting it naively shows gaps in eve
 For curves, `use_tensorboard: true` in `config/base.yml` writes event files under
 `output_dir/runs/`. No account, server or API key:
 
-    tensorboard --logdir .local/output/adapter/train-gemma4-e2b
+    .local/venv-train/bin/tensorboard --logdir .local/output/adapter/train-gemma4-e2b
+
+The **full path**, not a bare `tensorboard`: nothing here installs it globally, so a bare
+call picks up whatever is first on `PATH` — on one machine a pyenv 3.9 build that dies with
+`TypeError: Descriptors cannot be created directly` from a protobuf too old for its own
+generated code. The training venv has 2.21.0 because axolotl depends on it. The eval venv
+has none and needs none.
 
 ### Watching a run on RunPod, without SSH
 
 `src-train/train.py` publishes to S3 once, after the whole pipeline finishes. Until then
 the bucket would hold nothing, so `scripts/lib/s3_sync.sh` runs alongside training and
-pushes the TensorBoard events and the log every `S3_SYNC_INTERVAL` seconds (default 60):
+pushes the TensorBoard events and the log every `S3_SYNC_INTERVAL` seconds (default 60).
 
-    aws s3 sync s3://$S3_BUCKET/live/train-gemma4/runs ./runs
-    tensorboard --logdir ./runs
+Point TensorBoard straight at the bucket -- its file layer falls back to boto3, which the
+training venv has, so no local copy is needed and it re-reads as the pod pushes:
+
+    AWS_PROFILE=<profile> .local/venv-train/bin/tensorboard \
+        --logdir s3://$S3_BUCKET/live/train-gemma4/runs
+
+It shows "No dashboards are active" until the first event file appears, which is when the
+Trainer is constructed -- after tokenisation and the base-model load, not at pod start.
 
 The prefix is `live/<config-name>/`, fixed rather than run-id'd, so the address is the same
 for every run. Each run overwrites it; the durable per-run copy is the one `train.py`
