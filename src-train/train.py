@@ -12,12 +12,21 @@ from pathlib import Path
 from typing import List, Tuple
 from omegaconf import DictConfig, OmegaConf
 
-# Force Hugging Face to use the persistent volume cache directory to prevent downloading to container root disk
-os.environ["HF_HOME"] = "/app/huggingface_cache"
-os.environ["HF_HUB_CACHE"] = "/app/huggingface_cache/hub"
+# Force Hugging Face to use the persistent volume cache directory to prevent downloading to
+# container root disk. `setdefault`, not assignment: on a laptop these point into .local/
+# (scripts/lib/platform.sh), and an unconditional write also fired on plain `import train`
+# under pytest.
+os.environ.setdefault("HF_HOME", "/app/huggingface_cache")
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(os.environ["HF_HOME"], "hub"))
 
+# Everything this run writes. Overridden per platform so the same code serves a RunPod
+# volume and a laptop checkout.
+OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "/app/output")
+
+# TRAIN_CONFIG lets scripts/lib/platform.sh point a laptop at the tiny stand-in config
+# without editing this list. Unset, the production Gemma 4 config runs, as before.
 TRAINING_PIPELINE = [
-    "config/train-gemma4.yml",
+    os.environ.get("TRAIN_CONFIG", "config/train-gemma4.yml"),
     # "config/train-mistral4small.yml" Mistral is not feasible on RunPod (OOM at 4x L40S)
 ]
 
@@ -25,7 +34,7 @@ TRAINING_PIPELINE = [
 # The S3 prefix is versioned per run: overwriting a merged model in place is unsafe,
 # because transformers prefers a stray model.safetensors over a newer shard index and
 # would silently load the older weights.
-MERGED_DIR = "/app/output/merged"
+MERGED_DIR = os.path.join(OUTPUT_ROOT, "merged")
 MERGED_S3_PREFIX = "models"
 
 
@@ -34,6 +43,21 @@ class SyncTarget:
     """A directory to publish and the S3 prefix it belongs under."""
     local_dir: str
     s3_prefix: str
+
+def detect_accelerator() -> Tuple[str, int]:
+    """Returns (accelerator, worker_count).
+
+    "cuda" is the production path: DeepSpeed ZeRO-3 across the visible GPUs. "mps" is a
+    laptop running the tiny stand-in config, where DeepSpeed, FlashAttention-2 and NCCL all
+    do not exist. Returning a count of 1 for mps keeps `accelerate launch --num_processes`
+    honest without pretending Metal is a GPU cluster.
+    """
+    if torch.cuda.is_available():
+        return "cuda", torch.cuda.device_count()
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps", 1
+    return "cpu", 1
+
 
 def merge_configs(base_path: str, override_path: str):
     """Loads and merges a base YAML and an override YAML. Override values take precedence."""
@@ -46,15 +70,10 @@ def pre_download_models(pipeline_configs):
     Sequentially pre-stages base models in a single-process environment.
     CRITICAL: Immediately aborts execution if HF_TOKEN is missing or empty.
     """
-    token = os.environ.get("HF_TOKEN")
-    if not token or not token.strip():
-        print("\n" + "❌"*30)
-        print("❌ CRITICAL ENVIRONMENT VIOLATION: HF_TOKEN is missing or empty!")
-        print("❌ Gated models (Gemma, Mistral Small, Llama) require active authentication.")
-        print("❌ Please export your token before running the script:")
-        print("❌     export HF_TOKEN=\"hf_your_token_here\"")
-        print("❌"*30 + "\n", flush=True)
-        sys.exit(1)
+    # Deliberately NOT a pre-flight token check. Gating is a property of the repo, not of
+    # the name: google/gemma-4-26b-a4b-it is gated, google/gemma-4-E2B-it is not, and a
+    # prefix heuristic wrongly blocked the ungated one. Attempt the download and let the
+    # failure explain itself.
     
     print("\n" + "="*60)
     print("📥 PRE-STAGING BASE MODELS (Single-Process Cache Warmup)")
@@ -73,17 +92,23 @@ def pre_download_models(pipeline_configs):
             print(f"📦 Invoking native hf engine for: '{base_model_str}'...", flush=True)
             
             try:
-                cmd = ["hf", "download", base_model_str]
-                
-                # Execute the standalone downloader. It automatically 
-                # picks up the HF_TOKEN from the environment variables.
-                subprocess.run(cmd, check=True)
-                
+                # The Python API, not the `hf` console script: callers invoke this file by
+                # interpreter path without activating a venv, so the script is not
+                # necessarily on PATH. Same downloader underneath, and it still picks up
+                # HF_TOKEN and HF_HOME from the environment.
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(base_model_str)
+
                 print(f"✅ Weight cache successfully validated for: {base_model_str}\n", flush=True)
                 processed_models.add(base_model_str)
-            except subprocess.CalledProcessError as e:
-                print(f"\n❌ CRITICAL: Native 'hf' tool failed to download {base_model_str}!")
-                print(f"Exit Code: {e.returncode}")
+            except Exception as e:
+                print(f"\n❌ CRITICAL: failed to download {base_model_str}!")
+                print(f"   {type(e).__name__}: {e}")
+                if not os.environ.get("HF_TOKEN", "").strip():
+                    print("\n💡 HF_TOKEN is not set. If this repo is gated (as")
+                    print("   google/gemma-4-26b-a4b-it and Mistral Small are), you need one:")
+                    print('       export HF_TOKEN="hf_your_token_here"')
                 sys.exit(1)
                 
     print("="*60 + "\n🏁 All base model weights are cached locally. Ready for distributed execution.\n")
@@ -153,7 +178,7 @@ def generate_runtime_deepspeed(
     print(f"✅ DeepSpeed Stage 3 configuration compiled successfully at: {output_json_path} (cpu_checkpointing={cpu_checkpointing}, offload_optimizer={offload_optimizer}, offload_param={offload_param}, param_persistence_threshold={ds_dict['zero_optimization']['stage3_param_persistence_threshold']})")
     return output_json_path
 
-def run_training_job(config_path: str, num_gpus: int) -> Tuple[str, DictConfig, str]:
+def run_training_job(config_path: str, num_gpus: int, accelerator: str = "cuda") -> Tuple[str, DictConfig, str]:
     """
     Loads YAML parameters, binds unified runtime DeepSpeed assets, 
     and launches the distributed training engine without model-specific hardcodes.
@@ -174,8 +199,9 @@ def run_training_job(config_path: str, num_gpus: int) -> Tuple[str, DictConfig, 
     if "extra_model_config_kwargs" in merged_cfg and "torch_dtype" in merged_cfg["extra_model_config_kwargs"]:
         merged_cfg["torch_dtype"] = merged_cfg["extra_model_config_kwargs"]["torch_dtype"]
 
-    # Enforce high-performance FlashAttention-2 backend globally unless overridden in configuration
-    if "attn_implementation" not in merged_cfg:
+    # FlashAttention-2 is CUDA-only. On Metal the config supplies sdpa instead, so only
+    # default it in when we actually have CUDA.
+    if "attn_implementation" not in merged_cfg and accelerator == "cuda":
         merged_cfg["attn_implementation"] = "flash_attention_2"
 
     # Extract DeepSpeed tuning settings from Axolotl YAML if configured
@@ -184,18 +210,25 @@ def run_training_job(config_path: str, num_gpus: int) -> Tuple[str, DictConfig, 
     offload_param = merged_cfg.get("deepspeed_offload_param", False)
     param_persistence_threshold = merged_cfg.get("deepspeed_param_persistence_threshold", "auto")
 
-    # Generate and link the DeepSpeed configuration file
-    generate_runtime_deepspeed(
-        runtime_ds_path,
-        cpu_checkpointing=bool(cpu_checkpointing),
-        offload_optimizer=bool(offload_optimizer),
-        offload_param=bool(offload_param),
-        param_persistence_threshold=param_persistence_threshold
-    )
-    merged_cfg["deepspeed"] = runtime_ds_path
+    # DeepSpeed is CUDA-only. On Metal it is not merely unnecessary, it cannot load, so
+    # neither the config nor the accelerate flags may be produced.
+    use_deepspeed = accelerator == "cuda"
+    if use_deepspeed:
+        generate_runtime_deepspeed(
+            runtime_ds_path,
+            cpu_checkpointing=bool(cpu_checkpointing),
+            offload_optimizer=bool(offload_optimizer),
+            offload_param=bool(offload_param),
+            param_persistence_threshold=param_persistence_threshold
+        )
+        merged_cfg["deepspeed"] = runtime_ds_path
+    else:
+        merged_cfg.pop("deepspeed", None)
+        for key in [k for k in merged_cfg if str(k).startswith("deepspeed_")]:
+            merged_cfg.pop(key, None)
 
     if not merged_cfg.get("output_dir"):
-        merged_cfg["output_dir"] = f"/app/output/adapter/{config_filename}"
+        merged_cfg["output_dir"] = os.path.join(OUTPUT_ROOT, "adapter", config_filename)
 
     # Save the resolved, finalized configuration path for Axolotl to consume
     OmegaConf.save(config=merged_cfg, f=temp_yaml_path)
@@ -205,15 +238,15 @@ def run_training_job(config_path: str, num_gpus: int) -> Tuple[str, DictConfig, 
 
     # Formulate the launch execution array command with DeepSpeed integration
     # Note: --multi_gpu is omitted because it is mutually exclusive with --use_deepspeed in accelerate launch
-    cmd = [
-        "accelerate", "launch",
-        "--num_machines", "1",
-        "--num_processes", str(num_gpus),
-        "--use_deepspeed",
-        "--deepspeed_config_file", runtime_ds_path,
-        "src-train/train_patched.py",
-        temp_yaml_path
-    ]
+    # `sys.executable -m accelerate.commands.launch`, not the bare `accelerate` binary:
+    # callers invoke this script by interpreter path without activating a venv, so the
+    # console script is not necessarily on PATH. This also guarantees the launcher and the
+    # training process share one interpreter.
+    cmd = [sys.executable, "-m", "accelerate.commands.launch",
+           "--num_machines", "1", "--num_processes", str(num_gpus)]
+    if use_deepspeed:
+        cmd += ["--use_deepspeed", "--deepspeed_config_file", runtime_ds_path]
+    cmd += ["src-train/train_patched.py", temp_yaml_path]
 
     print(f"\n🚀 Launching Axolotl Training Engine:\n{' '.join(cmd)}\n", flush=True)
     try:
@@ -330,17 +363,20 @@ def main():
     # Enable blocking waits for NCCL to help diagnose hangs/timeouts
     os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
-    if not torch.cuda.is_available():
-        print("❌ ERROR: No CUDA devices identified on the host cluster!")
+    accelerator, num_gpus = detect_accelerator()
+    if accelerator == "cuda":
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(f"\n[Hardware] cuda: {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
+    elif accelerator == "mps":
+        print("\n[Hardware] Apple Metal (mps): single process, no DeepSpeed, no FlashAttention.")
+        print("           Local smoke run against the stand-in model -- see docs/local-pipeline.md.\n")
+    else:
+        print("\n❌ ERROR: no CUDA and no Metal device found; nothing to train on.")
         sys.exit(1)
-
-    num_gpus = torch.cuda.device_count()
-    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-    print(f"\n[Hardware Cluster Configuration] {num_gpus} GPUs Online | ~{vram_gb:.1f} GB VRAM per GPU\n")
 
     # On 2-GPU instances, PCIe P2P is frequently broken/unsupported on cloud providers (causing deadlocks).
     # We default to disabling P2P to ensure robust execution unless explicitly overridden.
-    if num_gpus == 2:
+    if accelerator == "cuda" and num_gpus == 2:
         if "NCCL_P2P_DISABLE" not in os.environ:
             print("ℹ️ 2-GPU cluster detected. Auto-disabling NCCL P2P to prevent virtualized PCIe deadlocks (NCCL_P2P_DISABLE=1).", flush=True)
             os.environ["NCCL_P2P_DISABLE"] = "1"
@@ -374,7 +410,7 @@ def main():
     print(f"🎬 Starting Pipeline Master Loop ({len(active_pipeline)} jobs registered)...")
 
     for config_yaml_path in active_pipeline:
-        output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus)
+        output_path, merged_config_data, resolved_config_path = run_training_job(config_yaml_path, num_gpus, accelerator)
         config_name = os.path.basename(config_yaml_path).replace(".yml", "").replace(".yaml", "")
         sync_targets.append(SyncTarget(output_path, f"{run_id}/{config_name}"))
 

@@ -1,0 +1,75 @@
+# --- config/train-gemma4-tiny.yml ---
+# Laptop smoke config. Same architecture and the same target regex as train-gemma4.yml,
+# but against a 5.4 MB stand-in and with every CUDA-only feature off.
+#
+# tiny-random/gemma-4-moe is google/gemma-4-26B-A4B-it's config with the dimensions shrunk,
+# so it keeps every quirk that has caused trouble: the Gemma4ClippableLinear vision tower,
+# 128 packed 3D experts, attention_k_eq_v (layers 1 and 3 have no v_proj), and mixed head
+# dims. Its tokenizer and chat template are copied verbatim from the 26B.
+#
+# Output quality is meaningless -- the weights are randomly initialised. This config exists
+# to exercise the train -> adapter -> engine handoff, which is where the real bugs live.
+base_model: tiny-random/gemma-4-moe
+
+adapter: lora
+lora_r: 8          # the tiny model's hidden_size is 8, so r=32 would be degenerate
+lora_alpha: 16
+
+# Identical to train-gemma4.yml: language model only, vision tower and router excluded.
+lora_target_modules: 'model\.language_model\.layers\.[\d]+\.(_checkpoint_wrapped_module\.)?(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj'
+
+# No flash-attention, no bf16 on Apple Silicon (M1/M2 lack hardware bf16, so this trains
+# in fp32). Axolotl also forces load_in_8bit and tf32 off on Metal.
+attn_implementation: sdpa
+bf16: false
+fp16: false
+tf32: false
+
+# THE memory knob, and it is not what you would guess. The model is 2.7M parameters, but
+# the vocabulary is the real 262144, so the logits tensor is seq_len x 262144 x 4 bytes and
+# dominates everything else. Measured peak on an M1 Max at 2048: 9.75 GiB for 2 steps,
+# 13.98 GiB over 30. base.yml's 16384 extrapolates to something that will swap a laptop --
+# do NOT inherit it. Axolotl silently drops samples longer than this, which conveniently
+# selects the three shortest of the eight (1749 / 1751 / 1954 tokens).
+sequence_len: 2048
+
+gradient_checkpointing: false
+optimizer: adamw_torch
+
+# PEFT initialises lora_B to exactly zero, so a fresh adapter is the identity until B
+# moves. At the production lr of 2e-4, 2 steps only reached max|B| = 3e-4 -- too small to
+# change any output, which makes the smoke test report a false negative. 30 steps at 1e-2
+# reach 0.14 and alter every prompt. Tuned for a measurable delta, not for quality.
+num_epochs: 10
+max_steps: 30
+learning_rate: 0.01
+
+# Keep the footprint predictable on a machine someone is also using.
+micro_batch_size: 1
+gradient_accumulation_steps: 1
+dataloader_num_workers: 0
+
+# Axolotl's fused LoRA kernels are Triton-only and Triton has no macOS wheel.
+lora_mlp_kernel: false
+lora_qkv_kernel: false
+lora_o_kernel: false
+
+# Eval serves the adapter directly, so there is nothing to merge.
+post_training_merge: false
+
+# Matches train-gemma4.yml: Gemma 4 ends turns with '<turn|>' (id 106), not Gemma 3's
+# '<end_of_turn>'. The tiny model's tokenizer and chat template are copied verbatim from
+# the 26B, so this is the same token in both.
+special_tokens:
+  eos_token: "<eos>"
+eot_tokens:
+  - "<turn|>"
+
+datasets:
+  - path: data/train/dataset.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content

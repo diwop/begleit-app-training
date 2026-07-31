@@ -28,6 +28,7 @@ ADAPTER_NAME = "ft"
 ENGINE = os.environ.get("SMOKE_ENGINE", "auto")
 TP_SIZE = int(os.environ.get("TP_SIZE", "2"))
 MAX_NEW_TOKENS = int(os.environ.get("SMOKE_MAX_TOKENS", "512"))
+MAX_MODEL_LEN = int(os.environ.get("SMOKE_MAX_MODEL_LEN", "8192"))
 # vLLM reserves this share of the card up front and refuses to start if it is not free.
 GPU_MEMORY_UTILIZATION = float(os.environ.get("SMOKE_GPU_MEM_UTIL", "0.90"))
 # Eager skips torch.compile and CUDA graph capture: ~20 min saved, irrelevant for 3 prompts.
@@ -208,17 +209,82 @@ class SGLangBackend:
         return [o["text"].strip() for o in self.engine.generate(prompts, params, **extra)]
 
 
+def lora_target_suffixes(config_path: Path) -> Optional[List[str]]:
+    """CPU only: restrict which modules vLLM wraps for LoRA. None everywhere else.
+
+    At engine start -- before any adapter is read -- vLLM walks the model and wraps every
+    supported module for LoRA (`LoRAModelManager._create_lora_modules`). That includes the
+    FusedMoE layers, which on a CPU backend use a monolithic kernel and assert:
+
+        AssertionError: Monolithic kernels are not supported for Fused MoE LoRA
+
+    The decision is made from vLLM's own `lora_config.target_modules`, never from
+    adapter_config.json, so no training-side setting can avoid it. Naming the projections
+    the adapter actually targets keeps the MoE runner unwrapped.
+
+    Restricted to CPU deliberately. On CUDA the fused path works -- it logs "Using TRITON
+    Unquantized MoE LoRA backend" -- and is what would apply expert LoRA weights if an
+    adapter ever carried them. PEFT cannot produce those today (failures-and-fixes.md,
+    Training Iteration 6: the experts are packed 3D nn.Parameters it cannot see), but
+    suppressing the path globally would silently skip them if that ever changes.
+    """
+    from vllm.platforms import current_platform
+
+    if not current_platform.is_cpu():
+        return None
+
+    targets = json.loads(config_path.read_text(encoding="utf-8"))["target_modules"]
+    if isinstance(targets, str):
+        sys.exit(f"❌ {config_path} still has a regex target_modules. Run "
+                 f"src-train/expand_targets.py on it before serving.")
+    suffixes = sorted({name.split(".")[-1] for name in targets})
+    print(f"ℹ️  CPU backend: restricting LoRA wrapping to {suffixes}", flush=True)
+    return suffixes
+
+
+def diagnose_no_effect(adapter: Path) -> str:
+    """Tell "the engine ignored it" apart from "there is nothing in it to apply".
+
+    PEFT initialises every lora_B to exactly zero, so a barely-trained adapter is
+    mathematically the identity: it loads and is applied, but changes no argmax over a
+    262144-token vocabulary. A 2-step run reached max|B| = 3e-4 and produced identical
+    output; 30 steps reached 0.14 and changed every prompt. Without this check the failure
+    reads as "the engine is ignoring the adapter", which sends you after the wrong bug.
+    """
+    weights = adapter / "adapter_model.safetensors"
+    if not weights.exists():
+        return f"No {weights.name} found -- the adapter directory is incomplete."
+    try:
+        from safetensors import safe_open
+
+        with safe_open(str(weights), "pt") as f:
+            b_max = max(
+                (f.get_tensor(k).float().abs().max().item()
+                 for k in f.keys() if "lora_B" in k),
+                default=0.0,
+            )
+    except Exception as e:  # diagnostics must never mask the real failure
+        return f"Could not inspect {weights.name} ({e})."
+
+    if b_max < 1e-3:
+        return (f"max|lora_B| = {b_max:.2e}, i.e. still ~zero. The adapter is applied but "
+                f"is numerically the identity -- it is undertrained, not unloaded.")
+    return (f"max|lora_B| = {b_max:.2e}, so the weights are non-trivial. The engine "
+            f"loaded the adapter but is not applying it.")
+
+
 class VLLMBackend:
     """max_lora_rank must be raised explicitly: vLLM defaults to 16 and the adapter is r=32."""
 
     def __init__(self, adapter: Path) -> None:
         from vllm import LLM
 
-        rank = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))["r"]
+        config_path = adapter / "adapter_config.json"
+        rank = json.loads(config_path.read_text(encoding="utf-8"))["r"]
         kwargs = {
             "model": BASE_MODEL,
             "tensor_parallel_size": TP_SIZE,
-            "max_model_len": 8192,
+            "max_model_len": MAX_MODEL_LEN,
             "trust_remote_code": True,
             "enable_lora": True,
             "max_loras": 1,
@@ -226,6 +292,12 @@ class VLLMBackend:
             "gpu_memory_utilization": GPU_MEMORY_UTILIZATION,
             "enforce_eager": EAGER,
         }
+        # Only set on CPU, so the GPU kwargs stay byte-identical to the RunPod run that
+        # was verified working.
+        lora_targets = lora_target_suffixes(config_path)
+        if lora_targets is not None:
+            kwargs["lora_target_modules"] = lora_targets
+
         print(f"⚙️  vllm.LLM({kwargs})", flush=True)
         self.engine = LLM(**kwargs)
         self.adapter = adapter
@@ -279,7 +351,7 @@ def main() -> None:
     print("\n" + "=" * 78)
     print(f"VERDICT: adapter altered {changed}/{len(cases)} outputs under greedy decoding.")
     if changed == 0:
-        sys.exit("❌ Adapter had no effect -- it loaded but is not being applied.")
+        sys.exit(f"❌ Adapter had no effect. {diagnose_no_effect(adapter)}")
     print("✅ Adapter is being applied at inference time.")
 
 

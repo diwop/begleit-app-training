@@ -53,6 +53,32 @@
 * **Fix**: Replaced the `(dir, config)` tuples with an explicit `SyncTarget(local_dir, s3_prefix)` so each artifact carries its own destination and no content-sniffing guard is needed. Merged models now publish to a per-run prefix (`models/<run_id>/<config>-fp8`), which makes overwrites impossible. Kept outside the run prefix used for adapters, because the evaluation pipeline downloads that entire prefix and would otherwise pull 28 GB on every adapter fetch. Also made merge/quantization failure fatal: the adapters still sync, then the run exits non-zero instead of reporting success.
 
 
+### Iteration 10: `eot_tokens` named a Gemma 3 token that does not exist in Gemma 4
+* **Error**: No crash — a warning that had been mistaken for a false positive:
+  `[WARNING] [axolotl.prompt_strategies.chat_template] EOT token '<end_of_turn>' not found in chat_template.`
+* **Root cause**: `config/train-gemma4.yml` set `eot_tokens: ["<end_of_turn>"]`, and the
+  comment above it said the mapping existed "to help Axolotl's parser identify turn
+  boundaries, clearing the false-positive warning". It never cleared it, and the warning was
+  not a false positive. `<end_of_turn>` is the **Gemma 3** turn terminator. Gemma 4 does not
+  have it: `tokenizer.encode("<end_of_turn>")` returns **7 tokens**
+  (`[236820, 643, 236779, 1340, 236779, 887, 236813]`), i.e. ordinary text. Gemma 4 ends a
+  turn with `<turn|>`, a single token with id **106** — which is also the second entry in the
+  model's own `eos_token_id: [1, 106]`. `<end_of_turn>` appears **zero times** in the chat
+  template shipped with `google/gemma-4-26B-A4B-it`.
+* **Impact**: Axolotl uses `eot_tokens` to locate the turn terminator and decide, via
+  `train_on_eot`, whether it falls inside the trained span
+  (`prompt_strategies/chat_template.py`, "Handle special tokens (EOT and EOS)"). Pointed at
+  a token that never occurs, `find_first_eot_token` cannot match, so the real terminator was
+  never trained — meaning the adapter had no gradient teaching it to stop. Worth checking
+  against any adapter trained before this fix: the symptom would be generations that run on
+  past the end of the answer.
+* **Found by**: the local pipeline (`docs/local-pipeline.md`). The stand-in model
+  `tiny-random/gemma-4-moe` carries the 26B's tokenizer and chat template verbatim, so
+  running training on a laptop surfaced a production config bug in seconds.
+* **Fix**: `eot_tokens: ["<turn|>"]` in `config/train-gemma4.yml` and
+  `config/train-gemma4-tiny.yml`. `special_tokens.eos_token: "<eos>"` (id 1) is left as is —
+  it matches the tokenizer's own EOS; the turn terminator is the separate concern.
+
 ## Mistral
 
 ### Iteration 1: Setting up Mistral Small 4 (119B) FP8 on 4x L40S
@@ -164,6 +190,48 @@
 * **Error**: `SyntaxError: 'return' outside function` or `AttributeError: module 'sglang.srt.models.gemma4_mm' has no attribute 'get_hidden_dim'`
 * **What didn't work**: Using a non-greedy regex (`.*?`) to replace the `get_hidden_dim` function body. In some SGLang versions, the function body contains internal `def` statements or complex logic that caused the regex to stop early or capture too much, leaving dangling code that broke the module import.
 * **Fix**: Updated the regex in `src-eval/evaluation.py` to be greedy (`.*?(?=\n    def )`) or explicitly target the entire function block until the next top-level definition. This ensures the entire function is replaced cleanly without leaving syntax-breaking residue.
+
+### Iteration 6: SGLang rejects a regex `target_modules`
+* **Error**: `RuntimeError: Failed to load LoRA adapter ft: Only 'all' or 'all-linear' can be used as the string for target module` (`sglang/srt/lora/lora_manager.py:541`).
+* **What didn't work**: The fully qualified regex introduced in Training Iteration 6. PEFT accepts `target_modules` as either a regex string or a list, so a regex is the maintainable way to pin targets to the language model at training time. SGLang accepts only a list of names or the literals `all` / `all-linear`, and PEFT copies the regex verbatim into `adapter_config.json`.
+* **Fix**: Added `src-train/expand_targets.py`, which instantiates the base model on the meta device and rewrites the regex into the explicit list of 205 matching module names. Fully qualified names cannot suffix-collide with the vision tower, so this satisfies both tools. Wired into `src-train/train.py` after training, so every future adapter ships engine-loadable. No retraining is needed for an existing adapter — only `adapter_config.json` changes, the weights are untouched.
+
+### Iteration 7: SGLang requires `v_proj` on every adapted attention layer
+* **Error**: `RuntimeError: Failed to load LoRA adapter ft: 'base_model.model.model.language_model.layers.5.self_attn.v_proj.lora_A.weight'`. After removing all `v_proj` entries the same error reappeared for `layers.0`.
+* **Root cause**: Gemma 4 sets `attention_k_eq_v: true`, so its five global-attention layers (5, 11, 17, 23, 29 — the `full_attention` entries in `layer_types`) share one tensor for K and V and have **no `v_proj` module at all**. The adapter correctly omits them, covering 25 of 30 layers. SGLang builds a fused QKV projection and demands a `v_proj` weight for every layer whenever attention is adapted. Requesting `v_proj` on layer 0 *after* it had been dropped from `target_modules` entirely proves the requirement comes from the fused path, not from the adapter.
+* **Conclusion**: unsatisfiable. Attention LoRA on Gemma 4 cannot work in SGLang regardless of adapter shape — the engine needs a projection the architecture does not have.
+
+### Iteration 8: SGLang cannot wrap `ClippableRowParallelLinear` even for an MLP-only adapter
+* **Error**: `Exception: No corresponding LoRA layer supported for <class 'sglang.srt.layers.clippable_linear.ClippableRowParallelLinear'>.`
+* **What didn't work**: Reducing the adapter to MLP only (`gate/up/down_proj`, 90 modules, 38% of the original capacity) to sidestep Iteration 7. That cleared the `v_proj` requirement but hit the same clippable-wrapper limitation recorded in Iteration 4 — `down_proj` is a `RowParallelLinear`, so even a pure-MLP adapter trips it.
+* **Conclusion**: **No adapter shape loads in stock SGLang.** Iteration 7 rules out attention, Iteration 8 rules out MLP. The five source patches in Iterations 1-5 were rational responses to a genuine dead end, not workarounds for a misconfigured adapter.
+
+### Iteration 9: vLLM serves the adapter unpatched (resolution)
+* **Result**: `VERDICT: adapter altered 2/3 outputs under greedy decoding. Adapter is being applied at inference time.`
+* **What works**: `vllm/vllm-openai:v0.26.0-cu129-ubuntu2404` loads the **full 205-module adapter** — `v_proj` asymmetry included, no capacity sacrificed — with no source patches. Relevant log lines:
+  - `Gemma4 model has heterogeneous head dimensions (head_dim=256, global_head_dim=512). FA4 not available, forcing TRITON_ATTN backend.` — vLLM detects and handles the quirk that needed manual forcing in SGLang (Iteration 2).
+  - `Using TRITON Unquantized MoE LoRA backend` — vLLM has a purpose-built MoE LoRA path; SGLang's equivalent is still unimplemented upstream.
+  - `Breakable CUDA graph is incompatible with LoRA; disabling prefill CUDA graph` — handled internally, so the Iteration 3 workaround is obsolete.
+* **Required settings**: `max_lora_rank` must be raised to the adapter's `r` (vLLM defaults to 16, the adapter is 32); `enforce_eager=True` for smoke tests, see Inference Containers Iteration 3.
+* **Consequence**: `post_training_merge` can be set to `false`. A 71 MiB adapter serves directly, so the 28 GB merged FP8 model and its per-eval download are no longer required. None of the five SGLang patches, nor `preprocess_adapter`, are needed.
+* **Comparison under greedy decoding** (temperature 0, so differences are the adapter, not sampling): the adapter preferred unsplit compounds (`Blutdruck` over `Blut-Druck`), softened modality in line with the source (`Du kannst` over `Du musst` for "Sie sollten versuchen"), used shorter imperatives (`Mach` over `Mache`), and added an extra concrete example. The trivial greeting case was unchanged, as expected — the base model already handles it.
+
+## Inference Containers
+
+### Iteration 1: The vLLM image's default entrypoint reserves the whole GPU
+* **Error**: `ValueError: Free memory on device cuda:0 (4.22/79.14 GiB) on startup is less than desired GPU memory utilization (0.9, 71.22 GiB).` — reproducible across four pods with an identical free-memory figure.
+* **What didn't work**: Killing `VLLM::EngineCore`, which freed the card for a minute before it filled again. The memory was never leaked by our runs: `ps -eo pid,ppid,cmd` showed `pid 1 /sbin/docker-init -- vllm serve` and `pid 51 python3 /usr/local/bin/vllm serve`, an OpenAI API server the image starts by default. It was serving `Qwen/Qwen3-0.6B` and reserving 90% of an 80 GB A100. Killing the child only made the parent respawn it.
+* **Fix**: Always set `dockerStartCmd`, never inherit the image default. Three images behaved three different ways — Axolotl starts sshd and JupyterLab, SGLang's entrypoint exits immediately (container dies on boot), vLLM's runs and takes the GPU. See `docs/launcher-hardening.md`.
+
+### Iteration 2: `InductorError: OSError: [Errno 5] Input/output error`
+* **Error**: After ~23 minutes of `torch.compile`, the engine died during `profile_run` with an I/O error while writing compiled kernels.
+* **What didn't work**: Neither disk space (60 GB free locally, 228 TB on the volume) nor the network filesystem explained it — `/app/tmp/torchinductor_root` was empty, so inductor was writing to local disk. **Root cause unconfirmed.**
+* **Mitigation**: Pin the cache directories explicitly to local disk (`TORCHINDUCTOR_CACHE_DIR`, `TRITON_CACHE_DIR`, `VLLM_CACHE_ROOT`) rather than inheriting `TMPDIR=/app/tmp` from `launch.sh`, and prefer eager mode for smoke tests, which avoids compilation entirely. Worth knowing regardless: `/app` is MooseFS, a network filesystem served from another datacenter.
+
+### Iteration 3: Startup cost — 659 s to 11 s
+* **Observation**: A cold pod spent 659 s on `Model loading took 51.04 GiB memory`, then ~23 min compiling LoRA-specialised CUDA graphs at 51 batch sizes before failing.
+* **Fix**: With `HF_HOME=/app/huggingface_cache` warm, the same load took **11.4 s**. `enforce_eager=True` (`SMOKE_EAGER=1`) skips `torch.compile` and CUDA graph capture, which costs per-token throughput but is irrelevant for a three-prompt smoke test. Set `SMOKE_EAGER=0` to exercise the compiled path that production serving would use.
+* **Caveat**: pod-local volumes die with the pod, so a recreated pod pays the 50 GB download again. Only a network volume survives recreation, at the cost of pinning deployments to one datacenter.
 
 ## 2-GPU Inference
 

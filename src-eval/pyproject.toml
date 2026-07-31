@@ -3,20 +3,81 @@ name = "vllm-moe-evaluation"
 version = "0.1.0"
 description = "vLLM Evaluation Pipeline"
 readme = "../README.md"
-requires-python = ">=3.10,<3.12"
+# 3.12: the RunPod eval image ships 3.12, and vLLM's macOS CPU build targets it.
+requires-python = ">=3.12"
 dependencies = [
     "pytest>=8.0.0",
     "textstat>=0.7.13",
     "awscli",
     "boto3",
-    "transformers @ git+https://github.com/huggingface/transformers.git",
-    "vllm==0.7.3",
-    "mistral_common>=1.11.0"
+    "transformers",
+    "mistral_common>=1.11.0",
+    "safetensors",  # smoke_adapter.diagnose_no_effect inspects lora_B magnitudes
 ]
+
+# vLLM is deliberately NOT a base dependency. On RunPod it comes from the container
+# (`eval_image` in README.md) and installing it again would fight the image. Locally there
+# is no macOS wheel, so it is built from source -- pinned to the exact revision behind the
+# v0.26.0 release the image ships, so local and cloud run the same engine.
+#
+# Keep this SHA in step with `eval_image`. It replaces the manual git clone/checkout that
+# scripts/setup-local.sh used to do; uv caches the checkout by commit, so re-installs are
+# cheap and a changed SHA rebuilds automatically.
+[project.optional-dependencies]
+# vllm-release: v0.26.0
+# ^ machine-readable, and load-bearing: scripts/lib/platform.sh compares this against the
+#   release tag in README.md's `eval_image` and refuses to run on a mismatch. Bump both
+#   together, and set the SHA below to that release's commit.
+local = [
+    "vllm @ git+https://github.com/vllm-project/vllm.git@568afb3a13806beb53bb2e6bd518269357b237c0 ; sys_platform == 'darwin'",
+    # No torch pin here on purpose: the built vLLM wheel already declares the exact torch
+    # it needs, and duplicating it only creates a second thing to get wrong.
+    #
+    # apache-tvm-ffi: upstream bug. xgrammar 0.2.3 (pulled in by vLLM) declares
+    # `apache-tvm-ffi>=0.1.9` with no upper bound, but its compiled wheel is not ABI
+    # compatible with 0.1.13. `import xgrammar` then dies with a bare
+    # `Segmentation fault: 11` in xgrammar::__TVMFFIStaticInitFunc0 -- no traceback, and it
+    # reproduces with xgrammar alone, nothing to do with vLLM or torch. Verified here:
+    # 0.1.8.post2 and 0.1.9 import fine, 0.1.13 segfaults.
+    "apache-tvm-ffi<0.1.10 ; sys_platform == 'darwin'",
+]
+# vLLM's setup.py imports torch at build time, so build isolation has to be off, which in
+# turn means the build dependencies must already be present. Installed as a separate first
+# step by scripts/setup-local.sh.
+#
+# ⚠️  The torch pin below MUST equal the darwin pin in requirements/cpu.txt AT THE PINNED
+# vLLM REVISION above -- check it with:
+#     curl -s https://raw.githubusercontent.com/vllm-project/vllm/<sha>/requirements/cpu.txt | grep ^torch
+# Build against a different torch than the wheel declares and the native extensions load
+# against the wrong ABI: the failure is a bare SIGSEGV inside xgrammar
+# (xgrammar::__TVMFFIStaticInitFunc0) with no Python traceback. v0.26.0 wants 2.11.0;
+# vLLM main at the time of writing wanted 2.13.0, so copying from the wrong checkout is
+# an easy and very confusing mistake.
+build = [
+    "cmake>=3.26",
+    "ninja",
+    "packaging",
+    "setuptools>=77.0.3",
+    "setuptools-scm>=8",
+    "wheel",
+    "torch==2.11.0 ; sys_platform == 'darwin'",  # matches v0.26.0 (568afb3a)
+]
+
+[tool.uv]
+# vLLM cannot be built in an isolated environment: its setup.py imports the torch that
+# must match the runtime torch.
+no-build-isolation-package = ["vllm"]
+# VLLM_TARGET_DEVICE=cpu and MAX_JOBS still have to be exported by the caller -- pyproject
+# has no way to express build-time environment variables.
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Required for the `vllm @ git+...` direct reference above; hatchling rejects direct
+# references in project metadata unless this is set.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]

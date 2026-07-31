@@ -15,7 +15,32 @@ dependencies = [
     "peft",
     "llmcompressor",
     "mistral_common>=1.11.0",
-    "liger-kernel; sys_platform == 'linux'"
+    "liger-kernel; sys_platform == 'linux'",
+    "omegaconf",  # train.py merges configs with it directly
+]
+
+# Opt-in, for the local Apple Silicon pipeline only (docs/local-pipeline.md). Deliberately
+# an extra rather than plain markers: `dvc.yaml` runs `uv run --project src-train` for
+# dataset prep, and that should not drag in a training stack.
+#
+# On RunPod all of this comes from the Axolotl container image instead, which is why
+# `scripts/train.sh` installs the bare project without this extra.
+[project.optional-dependencies]
+# NOTE: axolotl itself is deliberately NOT listed here. It pins
+# antlr4-python3-runtime==4.13.2, which is incompatible with the hydra-core that
+# dvc[s3] requires. `uv pip install` resolves per-platform and installs both happily,
+# but `uv run --project src-train` (used by dvc.yaml and the CI test job) builds a
+# UNIVERSAL lock that must satisfy every platform at once, and that combination is
+# unsatisfiable. So axolotl is installed by scripts/setup.sh instead -- the one
+# dependency that cannot live in this file.
+local = [
+    # Unconditional top-level imports inside axolotl that its image already satisfies:
+    #   bitsandbytes -> axolotl/loaders/adapter.py
+    #   torchao      -> axolotl/utils/callbacks/qat.py
+    #   torchvision  -> required by Gemma4Processor
+    "bitsandbytes; sys_platform == 'darwin'",
+    "torchao; sys_platform == 'darwin'",
+    "torchvision; sys_platform == 'darwin'",
 ]
 
 [build-system]

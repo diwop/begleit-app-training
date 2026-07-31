@@ -1,74 +1,41 @@
 #!/bin/bash
+# Train, on any supported platform. scripts/lib/platform.sh holds the differences.
+#
+#   darwin-arm64  Metal, the tiny stand-in config, artefacts under .local/
+#   linux-cuda    the container's CUDA stack, DeepSpeed ZeRO-3, artefacts under /app
+#
+# src-train/train.py detects the accelerator itself and drops DeepSpeed and
+# FlashAttention-2 when there is no CUDA, so the command below is the same everywhere.
 set -e
 
-cd /runner/repo/
+cd "$(dirname "$0")/.."
+# shellcheck source=lib/platform.sh
+source scripts/lib/platform.sh
 
-# Activate Axolotl's pre-built master environment
-export VIRTUAL_ENV="/workspace/axolotl-venv"
-export PATH="/workspace/axolotl-venv/bin:$PATH"
+bash scripts/setup.sh
 
-echo "Installing training dependencies into axolotl-venv..."
-uv pip install src-train/
-uv pip install "git+https://github.com/vllm-project/llm-compressor.git@main"
+LOG_FILE="${LOG_FILE:-$OUTPUT_ROOT/training_run.log}"
+mkdir -p "$(dirname "$LOG_FILE")"
 
-export HF_HOME="/app/huggingface_cache"
-LOG_FILE="/app/training_run.log"
+if [ ! -f data/train/dataset.jsonl ]; then
+    echo "==> dataset missing, pulling via DVC"
+    # The default remote is the local data/s3-mock directory, so this needs no AWS
+    # credentials -- see .dvc/config.
+    "$(dirname "$PY_TRAIN")/dvc" pull 2>/dev/null || "$PY_TRAIN" -m dvc pull
+fi
 
-# Enable debugging
-export NCCL_DEBUG=INFO
-export TORCH_DISTRIBUTED_DEBUG=DETAIL
+if [ "$IS_LOCAL" = "0" ]; then
+    # Diagnostics that only mean anything on a real cluster.
+    export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
+    export TORCH_DISTRIBUTED_DEBUG="${TORCH_DISTRIBUTED_DEBUG:-DETAIL}"
+fi
 
-echo "=== Repository Execution Started ==="
-echo "Logs will be saved to: $LOG_FILE"
-
-echo "Pulling dataset from DVC..."
-python -m dvc pull
-
-echo "Executing dynamic hardware launcher..."
-
-# Temporarily disable 'set -e' so a crash doesn't kill the script
+echo "==> training ($PLATFORM, config=$TRAIN_CONFIG)"
 set +e
-
-# Use 'tee' to print logs to the screen AND save them to the persistent disk.
-# 2>&1 captures both standard output and error messages
-# -u enforces unbuffered output by python
-python -u src-train/train.py 2>&1 | tee "$LOG_FILE"
-
-TRAIN_EXIT_CODE=${PIPESTATUS[0]} # Gets the exit code of python, not tee!
-
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-if [ -n "${S3_BUCKET:-}" ]; then
-    echo "S3_BUCKET is set to '${S3_BUCKET}'. Copying logs..."
-    aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/logs/${TIMESTAMP}_training.log"
-
-    if [ $? -eq 0 ]; then
-        echo "Logs copied to S3."
-    else
-        echo "WARNING: Could not copy logs to S3."
-        sleep 60 # Keep the pod alive for log download
-    fi
-fi
-
+"${NICE[@]}" "$PY_TRAIN" -u src-train/train.py 2>&1 | tee "$LOG_FILE"
+TRAIN_EXIT_CODE=${PIPESTATUS[0]}
 set -e
 
-# Handle lifecycle, S3 sync & (optional) RunPod shutdown
-if [ $TRAIN_EXIT_CODE -eq 0 ]; then
-    echo "Training completed successfully!"
-else
-    echo "[FATAL] Training failed with exit code $TRAIN_EXIT_CODE."
-    sleep 60 # Keep the pod alive for log download
-fi
-
-if [ "${KEEP_ALIVE:-false}" = "true" ]; then
-    echo "KEEP_ALIVE flag is active. Bypassing RunPod shutdown API."
-    echo "Pipeline complete. Returning control to terminal."
-elif [ -n "$RUNPOD_POD_ID" ]; then
-    echo "RunPod environment detected. Shutting down pod to save costs..."
-    curl -s --request POST "https://api.runpod.io/graphql" \
-    --header "Authorization: Bearer $RUNPOD_API_KEY" \
-    --header "Content-Type: application/json" \
-    --data "{\"query\": \"mutation { podStop(input: {podId: \\\"$RUNPOD_POD_ID\\\"}) { id } }\"}"
-else
-    echo "Other environment detected. Keeping container alive."
-    sleep infinity
-fi
+# shellcheck source=lib/finish.sh
+source scripts/lib/finish.sh
+finish "$TRAIN_EXIT_CODE" "$LOG_FILE" "training"

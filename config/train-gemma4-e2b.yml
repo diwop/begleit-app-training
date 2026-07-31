@@ -1,0 +1,64 @@
+# --- config/train-gemma4-e2b.yml ---
+# A REAL Gemma 4 on a laptop. Complements config/train-gemma4-tiny.yml; they answer
+# different questions and neither replaces the other.
+#
+#   tiny  : right architecture, no knowledge  -> does the adapter survive train -> serve?
+#   E2B   : real knowledge, wrong architecture -> does the data teach the right style?
+#
+# E2B is DENSE: `enable_moe_block: false`, `attention_k_eq_v: false`. It therefore does NOT
+# exercise the packed experts or the missing-v_proj asymmetry, which is exactly what has
+# broken in production. Use it to read German output, not to validate the adapter contract.
+#
+# It does share the heterogeneous head dims (256 sliding / 512 global) and the real
+# 262144-token vocabulary, and it is ungated -- no HF_TOKEN needed.
+base_model: google/gemma-4-E2B-it
+
+adapter: lora
+lora_r: 16
+lora_alpha: 32
+
+# Same shape as train-gemma4.yml, minus the MoE router (E2B has none).
+lora_target_modules: 'model\.language_model\.layers\.[\d]+\.(_checkpoint_wrapped_module\.)?(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj'
+
+attn_implementation: sdpa
+# fp16, not fp32: the checkpoint is 9.5 GB of bfloat16, and M1/M2 have no hardware bf16.
+# fp32 would double the weights to ~19 GB before a single activation is allocated.
+bf16: false
+fp16: true
+tf32: false
+
+# Must clear the longest sample Axolotl should keep; anything longer is silently dropped.
+sequence_len: 2048
+# Real weights this time, so trade compute for memory.
+gradient_checkpointing: true
+optimizer: adamw_torch
+
+num_epochs: 1
+max_steps: 2
+learning_rate: 0.0001
+
+micro_batch_size: 1
+gradient_accumulation_steps: 1
+dataloader_num_workers: 0
+
+# Triton has no macOS wheel; Axolotl's fused LoRA kernels need it.
+lora_mlp_kernel: false
+lora_qkv_kernel: false
+lora_o_kernel: false
+
+post_training_merge: false
+
+# Gemma 4 ends turns with '<turn|>' (id 106), not Gemma 3's '<end_of_turn>'.
+special_tokens:
+  eos_token: "<eos>"
+eot_tokens:
+  - "<turn|>"
+
+datasets:
+  - path: data/train/dataset.jsonl
+    type: chat_template
+    chat_template: tokenizer_default
+    field_messages: messages
+    message_property_mappings:
+      role: role
+      content: content

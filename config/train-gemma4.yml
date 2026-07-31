@@ -35,12 +35,16 @@ load_in_8bit: false # Disabled: Fits natively sharded under ZeRO-3
 load_in_4bit: false
 qlora_sharded_model_loading: false
 
-# Map special tokens directly to help Axolotl's parser identify 
-# turn boundaries, clearing the false-positive warning.
+# Turn boundaries. NOT '<end_of_turn>' -- that is the Gemma 3 spelling and does not exist
+# in Gemma 4, where it tokenizes as 7 pieces of ordinary text. Gemma 4 ends a turn with
+# '<turn|>' (id 106), which is also the second entry in the model's own
+# eos_token_id: [1, 106]. Naming a token that is not in the chat template means Axolotl
+# never trains the terminator, so the adapter may not learn to stop. See Training
+# Iteration 10 in failures-and-fixes.md.
 special_tokens:
   eos_token: "<eos>"
 eot_tokens:
-  - "<end_of_turn>"
+  - "<turn|>"
 
 datasets:
   - path: data/train/dataset.jsonl

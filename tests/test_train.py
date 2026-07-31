@@ -12,7 +12,7 @@ orig_torch = sys.modules.get('torch')
 mock_torch_obj = MagicMock()
 sys.modules['torch'] = mock_torch_obj
 
-from train import merge_configs, main, run_training_job
+from train import merge_configs, main, run_training_job, detect_accelerator
 
 # Cleanup sys.modules state immediately so other tool layers aren't polluted
 if orig_torch is not None:
@@ -48,13 +48,34 @@ def mock_hf_env(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "mock_hf_token_for_ci_pipeline")
 
 
-def test_no_cuda_exits(mock_cuda):
-    """Verifies that the launcher terminates immediately if no execution GPUs are found."""
+def test_no_accelerator_exits(mock_cuda):
+    """No CUDA and no Metal: the launcher must stop rather than crawl along on CPU.
+
+    Both mocks must be set. With only `cuda.is_available` falsified, the mocked
+    `torch.backends.mps.is_available()` returns a truthy MagicMock, the launcher happily
+    reports Metal, and the run then dies later for an unrelated reason (a read-only /app)
+    -- which still raises SystemExit(1) and made this test pass while verifying nothing.
+    """
     mock_cuda.is_available.return_value = False
-    
+    mock_torch_obj.backends.mps.is_available.return_value = False
+
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == 1
+
+
+def test_detect_accelerator_prefers_cuda(mock_cuda):
+    """CUDA wins when present, and reports the real device count."""
+    mock_cuda.is_available.return_value = True
+    mock_cuda.device_count.return_value = 2
+    assert detect_accelerator() == ("cuda", 2)
+
+
+def test_detect_accelerator_falls_back_to_metal(mock_cuda):
+    """Metal is a single process: DeepSpeed and NCCL do not exist there."""
+    mock_cuda.is_available.return_value = False
+    mock_torch_obj.backends.mps.is_available.return_value = True
+    assert detect_accelerator() == ("mps", 1)
 
 
 @patch("train.merge_configs")

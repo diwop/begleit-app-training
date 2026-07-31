@@ -2,9 +2,18 @@
 import sys
 import fire
 
+# Apple Silicon only, and it must precede `import axolotl`: Axolotl eagerly imports a
+# Triton-only module that cannot exist on macOS. No-op on RunPod. See mps_patch.py.
+from mps_patch import apply_mps_device_map_patch, install_triton_stub
+
+install_triton_stub()
+
 # Import target modules
 import axolotl.train
 import axolotl.cli.train
+
+# Also Apple Silicon only: Axolotl forces a device_map spelling that hangs on Metal.
+apply_mps_device_map_patch()
 
 # --- Apply tokenizer patch to avoid mistral-common validation errors ---
 try:

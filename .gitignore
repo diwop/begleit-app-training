@@ -39,6 +39,12 @@ huggingface/
 .merged-train*.yml
 .ds-config-train*.json
 
+# Local pipeline: venvs, vLLM source build, HF cache, adapters (scripts/setup-local.sh)
+.local/
+
+# Axolotl's tokenized dataset cache
+last_run_prepared/
+
 .
 # direnv: holds RUNPOD_API_KEY
 .envrc
