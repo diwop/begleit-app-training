@@ -165,17 +165,24 @@
   * *A degenerate matmul.* `ROPE_DEBUG=1` printed the arguments: `m=256` (= `global_head_dim`/2, correct), `n=1791`, `k=1`, one device, sane strides. Valid, and rejected anyway.
   * *ZeRO-3 CPU offload.* `DEEPSPEED_OFFLOAD=0` moved `alloc` from 24 MiB to 49539 MiB — the weights became resident, and it still crashed.
   * *TF32, or a regression in the mutable `main` image tag.* Refuted by the successful run of the same morning: same image, `cudaDriverVersion 13000`, `NCCL 2.28.9+cuda13.0`, sm_120 and `tf32: true`, trained to completion. The rotary embedding's fp32 matmul ran thousands of times there.
-* **Root cause — not ours.** `src-train/cuda_smoke.py`, in a fresh process with nothing imported but torch, no model and no data:
+* **Status: unresolved.** A first reading of `src-train/cuda_smoke.py` said "host fault, nothing to do with us" — on an H100, stage 1 failed, so a bare `ones(2,2) @ ones(2,2)` could not run. **That was wrong**, and it was measured on a contaminated pod: `scripts/setup.sh` had already run `uv pip install src-train/` into `/workspace/axolotl-venv`, repeatedly, across commits, on a reused `--keep-alive` pod.
+* **A genuinely bare pod passes everything.** RTX PRO 6000 Blackwell Server Edition, stock image, no network volume (one mounted at `/workspace` shadows the image's venv and leaves the container with no python at all), no template, no env:
 
-      [0] alloc        PASS   NVIDIA H100 80GB HBM3
-      [1] matmul_fp32  FAIL   CUBLAS_STATUS_INVALID_VALUE
+      [0] alloc  [1] matmul_fp32  [2] matmul_bf16  [3] tf32_off
+      [4] transformers  [5] deepspeed  [6] init_distributed  [7] zero.Init   -- ALL PASS
 
-  The GPU allocates memory and cannot multiply two 2x2 matrices. Three lines of Python reproduce it. Nothing in this repository is involved.
+  and it still passes after `uv pip install src-train/` (dvc, llmcompressor, textstat, hydra-core, omegaconf and the rest) and with `PYTORCH_ALLOC_CONF=expandable_segments:True` / `PYTORCH_CUDA_ALLOC_CONF=...` set, which `src-train/train.py` sets unconditionally.
+
+  So it is **not** the image, **not** our dependencies, **not** the allocator config, and **not** DeepSpeed initialisation. cuBLAS is healthy on that host right up to the point where the pipeline would load the model.
+* **What is left**: either the failing pods were individually bad hardware, or something in the run itself — `accelerate launch`, the generated `.ds-config-train-gemma4.json`, or the model load. The next test is to run the real pipeline on the pod that passes all eight stages, giving a working control and a failing run on the same host with the same packages.
 
 * **Why it took a day to see.** The failure surfaced at the first fp32 matmul of the first forward pass, which happens to be Gemma 4's rotary embedding, inside an evaluation that this branch had just introduced. Everything pointed at the new code. Seven hypotheses were tested on GPU pods and refuted one at a time — hardware, GPU count, VRAM, sequence length, token ids, both attention implementations, TF32, ZeRO-3 offload, the DeepSpeed engine, the image, PyPI drift. The decisive test was the cheapest one available and was run last: check out the last commit that worked and run it unchanged. It failed too, on the same data, which excluded the entire branch in a single run.
-* **What made it hard to see**: the same commit, image digest (`fca53a8a...`, unchanged since 2026-06-24), driver (`13000`) and NCCL (`2.28.9+cuda13.0`) trained successfully at 08:39 UTC and failed from ~15:20 UTC onward, across sm_89, sm_90 and sm_120. Nothing observable in the container changed. The fault is on the host side and appeared during the day.
-* **Fix**: none in this repo. Try `latest-py3.12-cu128-2.10.0` (same torch 2.10.0, CUDA 12.8) in `README.md`'s `train_image` — if `cuda_smoke.py` passes there, CUDA 13.0's cuBLAS is the culprit and the image pin is the workaround. Otherwise it is a RunPod support ticket, and `cuda_smoke.py` is the reproduction to attach.
-* **Two habits worth keeping**: run the last-known-good commit *first* when something that used to work stops working; and prefer the dated `main-YYYYMMDD-*` image tags over the mutable `main-*`, so "same image" can be asserted rather than checked against Docker Hub after the fact.
+* **What makes it hard to see**: the same commit, image digest (`fca53a8a...`, unchanged since 2026-06-24), driver (`13000`) and NCCL (`2.28.9+cuda13.0`) trained successfully at 08:39 UTC and failed from ~15:20 UTC onward, across sm_89, sm_90 and sm_120 — while a bare pod on sm_120 passes every check with the same packages. Nothing observable in the container distinguishes them.
+* **Still worth trying if it recurs**: `latest-py3.12-cu128-2.10.0` (same torch 2.10.0, CUDA 12.8) in `README.md`'s `train_image`, to rule CUDA 13.0's cuBLAS in or out.
+* **Three habits worth keeping**:
+  1. Run the last-known-good commit *first* when something that used to work stops working. Here it excluded the whole branch in one run, and was attempted only after a dozen pod cycles.
+  2. Never diagnose on a reused `--keep-alive` pod. Env vars set by an earlier launch persist (the launcher *merges* env, so unsetting a variable locally does not clear it), and `uv pip install` has already rewritten the venv. The first "host fault" verdict came from exactly that.
+  3. Prefer the dated `main-YYYYMMDD-*` image tags over the mutable `main-*`, so "same image" can be asserted rather than checked against Docker Hub after the fact.
 
 # Evaluating
 
